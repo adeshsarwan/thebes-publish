@@ -56,12 +56,18 @@ PIXABAY = {"total": 1, "hits": [{
 
 
 def fake_get(calls):
-    def get(url, params=None, headers=None, timeout=None):
+    def get(url, params=None, headers=None, timeout=None, stream=False):
         calls.append((url, params, headers))
         if url == "https://pixabay.com/api/":
             return FakeResp(PIXABAY)
         if url.startswith("https://pixabay.com/get/"):
-            r = FakeResp({}); r.content = png(1280, 768); return r
+            r = FakeResp({}); r.content = png(1280, 768); r.headers = {"Content-Type": "image/png"}
+
+            class Raw:
+                def read(self, n, decode_content=False):
+                    return r.content[:n]
+            r.raw = Raw()
+            return r
         if "api.unsplash.com/search" in url:
             return FakeResp(UNSPLASH)
         if "api.pexels.com/v1/search" in url:
@@ -168,6 +174,12 @@ class ImageUnitTest(ImagesBase):
         img = media.get_image(db, iid)
         self.assertTrue(img["url"].startswith("/media/stories/"), img["url"])        # our copy, not a Pixabay hotlink
         self.assertEqual((img["provider"], img["width"]), ("pixabay", 1280))
+        self.assertTrue(px["thumb"].startswith("/stock-preview?u=https%3A%2F%2Fpixabay.com%2Fget%2F"))
+        with mock.patch("newsroom.media.requests.get", side_effect=fake_get([])):
+            data, ctype = media.fetch_preview("https://pixabay.com/get/abc_640.jpg")
+        self.assertEqual(ctype, "image/png")
+        with self.assertRaises(media.MediaError):
+            media.fetch_preview("https://evil.example/x.jpg")
         html = blk.figure_html(img)
         self.assertIn('Image by <a target="_blank" rel="noopener" href="https://pixabay.com/users/Pat-77/">Pat</a> from', html)
 

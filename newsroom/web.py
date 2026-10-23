@@ -1661,6 +1661,12 @@ class Handler(BaseHTTPRequestHandler):
                                                               country=story.get("country") if one("local", "1") == "1" else None))
                 except media.MediaError as exc:
                     return self._json(400, {"error": str(exc)})
+            if path == "/stock-preview":
+                try:
+                    data, ctype = media.fetch_preview(q.get("u", [""])[0])
+                except media.MediaError:
+                    return self._send(404, "not found", "text/plain")
+                return self._send_bytes(data, ctype)
             if path == "/scoring":
                 return self._render(db, user, scoring_page(db, q, user), "scoring", q)
             if path == "/scoring/items":

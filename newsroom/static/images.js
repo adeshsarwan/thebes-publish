@@ -343,7 +343,11 @@
   function result(p) {
     var c = el("div", "img-res");
     var a = el("a", "", { href: p.source_url, target: "_blank", rel: "noopener", title: "Open on " + KIND[p.provider] });
-    a.appendChild(el("img", "", { src: p.thumb, alt: p.alt || "", loading: "lazy" }));
+    var im = el("img", "", { src: p.thumb, alt: "", loading: "lazy", title: p.alt || "" });
+    im.addEventListener("error", function () {   // fall back to the small preview, then a plain tile
+      if (p.preview && im.src !== p.preview) im.src = p.preview; else im.classList.add("broken");
+    });
+    a.appendChild(im);
     c.appendChild(a);
     var cl = creditLine(p); if (p.width) cl.appendChild(document.createTextNode(" · " + p.width + "×" + p.height));
     c.appendChild(cl);

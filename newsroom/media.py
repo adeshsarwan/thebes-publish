@@ -345,7 +345,10 @@ def _pixabay(h: dict) -> dict:
     page_url = h.get("pageURL") or ""
     tags = (h.get("tags") or "").strip()
     return {"provider": "pixabay", "provider_id": str(h["id"]), "url": h.get("largeImageURL") or h.get("webformatURL"),
-            "thumb": h.get("webformatURL") or h.get("previewURL"), "sizes": {},
+            # Pixabay's image links don't load when shown straight from another site, so the desk shows
+            # search thumbnails through its own /stock-preview proxy (search results only, as Pixabay allows)
+            "thumb": "/stock-preview?" + urlencode({"u": h.get("webformatURL") or h.get("previewURL") or ""}),
+            "preview": h.get("previewURL"), "sizes": {},
             "width": h.get("imageWidth"), "height": h.get("imageHeight"),
             "alt": (tags[:1].upper() + tags[1:]) if tags else "",
             "photographer": name, "photographer_url": f"https://pixabay.com/users/{name}-{h.get('user_id')}/" if h.get("user_id") else "",
@@ -354,6 +357,41 @@ def _pixabay(h: dict) -> dict:
 
 
 _px_cache: dict[tuple, tuple[float, list]] = {}   # Pixabay asks for searches to be cached for 24 hours
+
+
+FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StoryHub/1.0; +https://publish.thebesads.com)",
+                 "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"}
+
+
+def fetch_preview(url: str) -> tuple[bytes, str]:
+    """A Pixabay search thumbnail, fetched by the server for the desk (temporary display only)."""
+    parts = urlsplit(url or "")
+    if parts.scheme != "https" or parts.netloc not in PIXABAY_HOSTS:
+        raise MediaError("not a Pixabay image address")
+    key = ("preview", url)
+    with _cache_lock:
+        hit = _preview_cache.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    try:
+        r = requests.get(url, timeout=TIMEOUT, headers=FETCH_HEADERS, stream=True)
+        r.raise_for_status()
+        ctype = r.headers.get("Content-Type", "").split(";")[0]
+        if not ctype.startswith("image/"):
+            raise MediaError("Pixabay didn't send an image")
+        data = r.raw.read(3 * 1024 * 1024 + 1, decode_content=True)
+        if len(data) > 3 * 1024 * 1024:
+            raise MediaError("preview too large")
+    except requests.RequestException as exc:
+        raise MediaError(f"couldn't load the preview: {exc}") from exc
+    with _cache_lock:
+        if len(_preview_cache) > 300:
+            _preview_cache.clear()
+        _preview_cache[key] = (time.time(), (data, ctype))
+    return data, ctype
+
+
+_preview_cache: dict = {}
 
 
 def _pixabay_search(query: str, per_page: int, page: int, orientation: str | None) -> list[dict]:
@@ -582,7 +620,7 @@ def add_stock(db: Database, user: dict | None, story_id: int, provider: str, pro
         if urlsplit(src).scheme != "https" or urlsplit(src).netloc not in PIXABAY_HOSTS:
             raise MediaError("unexpected Pixabay image address")
         try:
-            r = requests.get(src, timeout=30)
+            r = requests.get(src, timeout=30, headers=FETCH_HEADERS)
             r.raise_for_status()
         except requests.RequestException as exc:
             raise MediaError(f"couldn't download the image from Pixabay: {exc}") from exc
