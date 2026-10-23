@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Story Hub newsroom: one-time server setup (Ubuntu 22.04/24.04). Run as root:
 #
-#   sudo bash deploy/setup_vps.sh [--domain publish.thebesads.com] [--restore /path/storyhub.dump]
+#   sudo bash deploy/setup_vps.sh [--letsencrypt you@example.com] [--domain publish.thebesads.com] [--restore /path/storyhub.dump]
 #
 # Safe to re-run: every step checks what is already there. It never touches
 # other sites, MySQL, RabbitMQ or existing nginx configs; it only adds:
@@ -9,11 +9,13 @@
 #   - system user "storyhub", code in /opt/story-hub, data in /var/lib/story-hub
 #   - systemd service "story-hub-desk" on 127.0.0.1:8765
 #   - /etc/cron.d/story-hub (pipeline schedule every 10 min, nightly backup)
-#   - nginx site for the domain, accepting Cloudflare's addresses only
+#   - nginx site for the domain, accepting Cloudflare's addresses only, with a Let's Encrypt
+#     certificate (certbot renews it and reloads nginx automatically)
 set -euo pipefail
 
 DOMAIN="publish.thebesads.com"
 RESTORE=""
+LE_EMAIL=""
 APP_DIR="/opt/story-hub"
 DATA_DIR="/var/lib/story-hub"
 BACKUP_DIR="/var/backups/story-hub"
@@ -28,6 +30,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
     --restore) RESTORE="$2"; shift 2 ;;
+    --letsencrypt) LE_EMAIL="$2"; shift 2 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
 done
@@ -201,17 +204,37 @@ SNIP=/etc/nginx/snippets/story-hub-cloudflare-only.conf
   echo "deny all;"
 } > "$SNIP.new"
 if grep -q '^allow .*;' "$SNIP.new"; then mv "$SNIP.new" "$SNIP"; else rm -f "$SNIP.new"; echo "!! Could not download Cloudflare's address list; keeping the old one."; fi
-install -d -m 755 "$CERT_DIR"
+install -d -m 755 "$CERT_DIR" /var/www/letsencrypt
 SITE=/etc/nginx/sites-available/story-hub
-sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CERT_DIR__#$CERT_DIR#g" deploy/nginx-story-hub.conf > "$SITE"
-if [ -s "$CERT_DIR/origin.pem" ] && [ -s "$CERT_DIR/origin.key" ]; then
+render() { sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CERT__#$1#g" -e "s#__KEY__#$2#g" "$3"; }
+# 1. port 80 first: needed for the Let's Encrypt check, redirects everything else to HTTPS
+render "" "" deploy/nginx-story-hub-http.conf > "$SITE"
+ln -sf "$SITE" /etc/nginx/sites-enabled/story-hub
+nginx -t && systemctl reload nginx
+# 2. certificate
+LE_DIR="/etc/letsencrypt/live/$DOMAIN"
+if [ -n "$LE_EMAIL" ] && [ ! -s "$LE_DIR/fullchain.pem" ]; then
+  command -v certbot >/dev/null || apt-get install -y -qq certbot >/dev/null
+  echo "Requesting a Let's Encrypt certificate for $DOMAIN ..."
+  certbot certonly --webroot -w /var/www/letsencrypt -d "$DOMAIN" --email "$LE_EMAIL" --agree-tos \
+    --non-interactive --deploy-hook "systemctl reload nginx" \
+    || echo "!! Let's Encrypt could not verify $DOMAIN. See 'Certificate' in deploy/README.md (usually Cloudflare's 'Always Use HTTPS')."
+fi
+if [ -s "$LE_DIR/fullchain.pem" ]; then
+  CERT="$LE_DIR/fullchain.pem"; KEY="$LE_DIR/privkey.pem"; CERT_KIND="Let's Encrypt (renews automatically)"
+elif [ -s "$CERT_DIR/origin.pem" ] && [ -s "$CERT_DIR/origin.key" ]; then
   chmod 600 "$CERT_DIR/origin.key"
-  ln -sf "$SITE" /etc/nginx/sites-enabled/story-hub
-  nginx -t && systemctl reload nginx
-  NGINX_STATE="enabled for https://$DOMAIN"
+  CERT="$CERT_DIR/origin.pem"; KEY="$CERT_DIR/origin.key"; CERT_KIND="Cloudflare origin certificate"
 else
-  rm -f /etc/nginx/sites-enabled/story-hub
-  NGINX_STATE="NOT enabled yet: save the Cloudflare origin certificate as $CERT_DIR/origin.pem and its key as $CERT_DIR/origin.key, then re-run this script"
+  CERT=""
+fi
+# 3. HTTPS once there is a certificate
+if [ -n "$CERT" ]; then
+  { render "" "" deploy/nginx-story-hub-http.conf; echo; render "$CERT" "$KEY" deploy/nginx-story-hub.conf; } > "$SITE"
+  nginx -t && systemctl reload nginx
+  NGINX_STATE="https://$DOMAIN is live ($CERT_KIND)"
+else
+  NGINX_STATE="HTTP only, no certificate yet: run  sudo bash deploy/setup_vps.sh --letsencrypt you@example.com"
 fi
 
 # ---------------------------------------------------------------- summary

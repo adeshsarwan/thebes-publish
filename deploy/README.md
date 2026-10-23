@@ -3,7 +3,7 @@
 The editor and publisher desk lives at **https://publish.thebesads.com**:
 
 ```
-browser → Cloudflare (DNS, HTTPS, Access login) → nginx on the VPS (Cloudflare IPs only) → desk on 127.0.0.1:8765
+browser → Cloudflare (DNS, HTTPS, Access login) → nginx on the VPS (Cloudflare IPs only, Let's Encrypt certificate) → desk on 127.0.0.1:8765
                                                    cron, every 10 min → python -m newsroom tick  (noon pulls: New York, London, Sydney)
                                                    PostgreSQL 17 on localhost: storyhub (pipeline / newsroom / site schemas)
 ```
@@ -66,12 +66,27 @@ sudo -u storyhub -H bash -c 'cd /opt/story-hub && .venv/bin/python -m newsroom c
 
 Moving existing Mac data instead is optional. On the Mac, run `pg_dump -Fc -h localhost -d financehub -f ~/storyhub.dump` (the Mac's database keeps its old name). Copy the file to the server, then run `sudo bash deploy/setup_vps.sh --restore /path/storyhub.dump`. This only works while the server database is still empty. Either way, run `python -m newsroom schedule uninstall` on the Mac so both machines don't pull.
 
-### 4. Cloudflare
+### 4. Certificate and Cloudflare
 
-1. **Origin certificate:** go to **SSL/TLS → Origin Server → Create certificate** for `publish.thebesads.com`, keeping the PEM format. On the server, save the certificate as `/etc/ssl/story-hub/origin.pem` and the private key as `/etc/ssl/story-hub/origin.key`. Then run `sudo bash deploy/setup_vps.sh` again, which turns on the nginx site.
-2. **SSL mode:** under **SSL/TLS → Overview**, find the zone's mode. If it is **Full (strict)**, you're done. If it is Flexible or Full, don't change it for the whole zone, because other subdomains depend on it. Instead go to **Rules → Configuration Rules → Create rule**, set **Hostname equals `publish.thebesads.com`**, and set **SSL → Full (strict)**.
-3. **DNS:** add an `A` record named `publish`, pointing to the server's IP, with **Proxied** (orange cloud) on.
+1. **DNS:** add an `A` record named `publish`, pointing to `172.105.48.107`, with **Proxied** (orange cloud) on.
+2. **Certificate (Let's Encrypt, free):**
+
+   ```bash
+   cd /opt/story-hub && sudo bash deploy/setup_vps.sh --letsencrypt you@thebesads.com
+   ```
+
+   This gets the certificate, switches the desk to HTTPS, and sets up renewal. certbot renews it every couple of months and reloads nginx by itself. The email address only gets expiry warnings from Let's Encrypt.
+
+   If it says Let's Encrypt could not verify the domain, the usual cause is Cloudflare's **SSL/TLS → Edge Certificates → Always Use HTTPS** redirecting the check before the server has a certificate. To get past it:
+   1. Set the `publish` record to **DNS only** (grey cloud).
+   2. Run the command again.
+   3. Set the record back to **Proxied**.
+
+   Renewals work while proxied, because the server answers the check over HTTPS too.
+3. **SSL mode:** under **SSL/TLS → Overview**, find the zone's mode. If it is **Full (strict)**, you're done. If it is Flexible or Full, don't change it for the whole zone, because other subdomains depend on it. Instead go to **Rules → Configuration Rules → Create rule**, set **Hostname equals `publish.thebesads.com`**, and set **SSL → Full (strict)**.
 4. **Access:** in **Zero Trust → Access → Applications → Add → Self-hosted**, use the domain `publish.thebesads.com`. Add a policy with action **Allow**, include **Emails ending in `@thebesads.com`** (or list specific emails), and use Google or one-time PIN as the login method. The free plan covers up to 50 users.
+
+To use a Cloudflare origin certificate instead, save it as `/etc/ssl/story-hub/origin.pem` and its key as `origin.key`, then re-run the setup. A Let's Encrypt certificate takes priority when both exist.
 
 ### 5. Auto-publish byline
 
