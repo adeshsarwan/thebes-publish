@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from pipeline import categories
 from pipeline.cluster import cluster_items
 from pipeline.db import Database, connect, utcnow
 from pipeline.llm import LLMClient, get_client, model_name
@@ -86,6 +87,8 @@ def request_pickup(db: Database, user: dict, cluster_id: int, *, angle: str, aud
     cluster = db.fetchone("select * from pipeline.story_clusters where id = ?", (cluster_id,))
     if not cluster:
         raise PickupError("No such story on the scoring desk.")
+    if not categories.can_access(user, cluster.get("category")):
+        raise PickupError(f"You don't work on {categories.name(cluster.get('category'))} stories.")
     existing = db.fetchone("select id from newsroom.stories where cluster_id = ?", (cluster_id,))
     if existing:
         raise PickupError(f"This story is already in the newsroom (story {existing['id']}).")
@@ -114,15 +117,23 @@ def start_background(request_id: int) -> None:
 
 
 # --------------------------------------------------------------------------- research
-RESEARCH_SYSTEM = """You are a research assistant for a personal-finance newsroom in {country_name}.
-Use Google Search to gather current, verifiable facts for an editor. Prefer official sources
-(central banks, regulators, tax and statistics agencies) and established financial publishers.
+RESEARCH_SYSTEM = """You are a research assistant for the {category_name} desk of a newsroom in {country_name}.
+Use Google Search to gather current, verifiable facts for an editor. Prefer primary and official
+sources ({preferred}) and established publishers.
 Write a research brief in plain English with:
 - KEY FACTS: bullet points, each with the specific figure, date and who said it.
 - CONTEXT: 2-4 bullets on background a reader needs.
-- WHAT IT MEANS FOR HOUSEHOLDS IN {country_name_upper}: 2-4 bullets.
+- WHAT IT MEANS FOR READERS IN {country_name_upper} ({lens}): 2-4 bullets.
 - COUNTERPOINTS AND CAVEATS: 1-3 bullets.
-Only include facts you found in your search results. Do not give personalised investment advice."""
+Only include facts you found in your search results. Do not give personalised financial,
+medical or betting advice, and do not repeat unverified rumours."""
+
+PREFERRED_SOURCES = {
+    "finance": "central banks, regulators, tax and statistics agencies",
+    "sports": "governing bodies, leagues, clubs and official match data",
+    "entertainment": "studios, labels, broadcasters, award bodies and the people involved, on the record",
+    "fitness": "health agencies, peer-reviewed journals and university research announcements",
+}
 
 
 def _resolve(url: str, timeout: float = 6.0) -> str:
@@ -136,8 +147,10 @@ def _resolve(url: str, timeout: float = 6.0) -> str:
 
 
 def research(client: LLMClient, *, country: str, headline: str, items: list[dict], angle: str,
-             notes: str | None, extra_urls: list[str], resolve_links: bool = True) -> dict:
+             notes: str | None, extra_urls: list[str], resolve_links: bool = True,
+             category: str | None = None) -> dict:
     name = COUNTRY_NAMES.get(country, country)
+    cat = category if categories.valid(category) else categories.default()
     lines = [f"TOPIC: {headline}", f"COUNTRY: {name}", f"ANGLE THE EDITOR WANTS: {angle}"]
     if notes:
         lines.append(f"EDITOR'S NOTES: {notes}")
@@ -147,10 +160,13 @@ def research(client: LLMClient, *, country: str, headline: str, items: list[dict
     if extra_urls:
         lines.append("ALSO CONSIDER THESE SOURCES THE EDITOR SUPPLIED:")
         lines += [f"- {u}" for u in extra_urls]
-    lines.append("Research this for a personal-finance story and write the brief.")
+    lines.append(f"Research this for a {categories.name(cat).lower()} story and write the brief.")
     model = model_name("writer", client)
-    out = client.research(model=model, system=RESEARCH_SYSTEM.format(country_name=name, country_name_upper=name.upper()),
-                          prompt="\n".join(lines))
+    system = RESEARCH_SYSTEM.format(
+        category_name=categories.name(cat).lower(), country_name=name, country_name_upper=name.upper(),
+        lens=categories.get(cat).get("lens") or "what it means for readers",
+        preferred=PREFERRED_SOURCES.get(cat, "official bodies and the organisations involved"))
+    out = client.research(model=model, system=system, prompt="\n".join(lines))
     sources = []
     for s in out.get("sources", [])[:12]:
         url = _resolve(s["url"]) if resolve_links else s["url"]
@@ -204,14 +220,16 @@ def _run(db: Database, req: dict, client: LLMClient, fetch_text: bool, resolve_l
     brief = None
     if req["research"]:
         brief = research(client, country=cluster["country"], headline=cluster["headline"], items=items,
-                         angle=req["angle"], notes=req.get("notes"), extra_urls=extra_urls, resolve_links=resolve_links)
+                         angle=req["angle"], notes=req.get("notes"), extra_urls=extra_urls, resolve_links=resolve_links,
+                         category=cluster.get("category"))
         source_material += "\n\n[R] AI research brief (Google Search)\n" + brief["text"]
         if brief["sources"]:
             source_material += "\nResearch sources:\n" + "\n".join(f"- {s['name']}: {s['url']}" for s in brief["sources"])
         known = {canonical_url(r["url"]) for r in refs}
         refs += [s for s in brief["sources"] if canonical_url(s["url"]) not in known]
 
-    row = {"cluster_id": req["cluster_id"], "country": cluster["country"], "angle": req["angle"],
+    row = {"cluster_id": req["cluster_id"], "country": cluster["country"], "category": cluster.get("category"),
+           "angle": req["angle"],
            "audience": Database.unj(req.get("audience"), []), "notes": req.get("notes")}
     model = model_name("writer", client)
     story, report, attempts = draft_story(client, model, row, source_material)
@@ -226,7 +244,8 @@ def _run(db: Database, req: dict, client: LLMClient, fetch_text: bool, resolve_l
         slug=_slug(cluster["country"], story["headline"], req["cluster_id"]),
         content=story_content(story, items, refs), guardrails=report.as_dict(), model=model,
         impact_score=ev.get("impact_score"), angle=req["angle"], attempts=attempts,
-        origin="editor_pick", picked_by=req["requested_by"], research=research_doc)
+        origin="editor_pick", picked_by=req["requested_by"], research=research_doc,
+        category=cluster.get("category"))
     decision = ev.get("decision") or "not scored"
     score = f" ({ev['impact_score']:.0f})" if ev.get("impact_score") is not None else ""
     log_event(db, story_id, "picked_up", actor_id=req["requested_by"],

@@ -1,9 +1,10 @@
 """Stage 3 — the editorial desk.
 
-For every pending story cluster the model acts as an assignment editor: it
-scores how much the event matters to a reader's money, flags promotional or
-irrelevant items, and proposes the personal-finance *angle* the story should
-take. We turn the scores into an impact score, decide run / hold / reject, and
+For every pending story cluster the model acts as an assignment editor for the
+cluster's category (config/categories.yaml): it scores the story on that
+category's dimensions (for finance: how much it matters to a reader's money),
+flags promotional or irrelevant items, and proposes the *angle* the story
+should take. We turn the scores into an impact score, decide run / hold / reject, and
 commission the top stories per country.
 """
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from . import categories
 from .cluster import cluster_items
 from .db import Database, country_filter, utcnow
 from .llm import LLMClient, LLMError, model_name
@@ -18,53 +20,36 @@ from .settings import COUNTRY_NAMES, get_settings
 
 log = logging.getLogger(__name__)
 
+# Finance's dimensions, kept as named columns on pipeline.evaluations; every
+# category's scores (including finance's) are also stored in evaluations.scores.
 DIMENSIONS = ("wallet_impact", "breadth", "actionability", "urgency", "novelty")
 
-EVAL_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        **{d: {"type": "INTEGER", "minimum": 1, "maximum": 5} for d in DIMENSIONS},
-        "flags": {
-            "type": "ARRAY",
-            "items": {
-                "type": "STRING",
-                "enum": ["promotional", "product_review", "not_personal_finance", "corporate_admin",
-                         "opinion_only", "insufficient_facts", "local_only"],
-            },
+
+def eval_schema(category: str | None) -> dict:
+    """The structured answer the model must give for this category's rubric."""
+    keys = categories.dimension_keys(category)
+    flags = list(categories.desk(category).get("flags") or [])
+    return {
+        "type": "OBJECT",
+        "properties": {
+            **{d: {"type": "INTEGER", "minimum": 1, "maximum": 5} for d in keys},
+            "flags": {"type": "ARRAY", "items": {"type": "STRING", "enum": flags}} if flags
+            else {"type": "ARRAY", "items": {"type": "STRING"}},
+            "angle": {"type": "STRING"},
+            "audience": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "rationale": {"type": "STRING"},
         },
-        "angle": {"type": "STRING"},
-        "audience": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "rationale": {"type": "STRING"},
-    },
-    "required": [*DIMENSIONS, "flags", "angle", "audience", "rationale"],
-}
-
-SYSTEM = """You are the assignment editor of a personal-finance news site for {country_name} readers.
-You decide which incoming items deserve an original story. We only run stories where
-we can explain a concrete effect on ordinary people's money: borrowing costs, savings
-returns, tax bills, benefits, prices, fees, consumer protections, or scams.
-
-Score each dimension 1-5:
-- wallet_impact: 5 = directly changes what many people pay or receive (rate decision,
-  tax change, CPI print, new fee rules); 1 = no plausible effect on household money.
-- breadth: 5 = most adults in {country_name}; 3 = a large group (all mortgage holders,
-  all renters); 1 = a niche group or a single firm's customers.
-- actionability: 5 = there are clear, general steps a reader can take now; 1 = nothing to do.
-- urgency: 5 = deadline or effective date within weeks; 1 = no time element.
-- novelty: 5 = genuinely new information; 1 = evergreen explainer or recycled news.
-
-Flags (hard rejects): promotional (affiliate/product pitch), product_review,
-not_personal_finance (markets/corporate news with no household angle),
-corporate_admin (appointments, internal governance, events, banknote designs).
-Soft flags: opinion_only, insufficient_facts, local_only.
-
-The angle is one sentence naming the specific reader effect our story will explain,
-e.g. "How the hold affects variable-rate mortgage payments and easy-access savings rates".
-Audience is a list of concrete reader groups. Be strict: most items should NOT run."""
+        "required": [*keys, "flags", "angle", "audience", "rationale"],
+    }
 
 
-def _prompt(country: str, items: list[dict]) -> str:
-    lines = [f"Country: {COUNTRY_NAMES.get(country, country)}", f"Items in this story cluster: {len(items)}", ""]
+def system_prompt(category: str | None, country: str) -> str:
+    return categories.desk(category)["system"].format(country_name=COUNTRY_NAMES.get(country, country))
+
+
+def _prompt(country: str, items: list[dict], category: str | None = None) -> str:
+    lines = [f"Country: {COUNTRY_NAMES.get(country, country)}", f"Category: {categories.name(category)}",
+             f"Items in this story cluster: {len(items)}", ""]
     for i, it in enumerate(items, 1):
         lines += [
             f"[{i}] source: {it['source_name']} ({it['source_kind']})",
@@ -77,9 +62,10 @@ def _prompt(country: str, items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def impact_score(scores: dict, items: list[dict]) -> float:
-    weights = get_settings().editorial["desk"]["weights"]
-    weighted = sum(weights[d] * int(scores[d]) for d in DIMENSIONS)          # 1..5
+def impact_score(scores: dict, items: list[dict], category: str | None = None) -> float:
+    dims = categories.dimensions(category)
+    total = sum(float(d["weight"]) for d in dims) or 1.0
+    weighted = sum(float(d["weight"]) * int(scores[d["key"]]) for d in dims) / total   # 1..5
     score = (weighted - 1) / 4 * 100                                         # 0..100
     if any(it["source_kind"] == "official" for it in items):
         score += 5                                                           # primary source available
@@ -87,8 +73,8 @@ def impact_score(scores: dict, items: list[dict]) -> float:
     return round(max(0.0, min(100.0, score)), 1)
 
 
-def decide(score: float, flags: list[str]) -> str:
-    desk = get_settings().editorial["desk"]
+def decide(score: float, flags: list[str], category: str | None = None) -> str:
+    desk = categories.desk(category)
     if set(flags) & set(desk.get("reject_flags", [])):
         return "reject"
     if "insufficient_facts" in flags and score < desk["run_threshold"] + 10:
@@ -106,36 +92,39 @@ def evaluate(db: Database, client: LLMClient, limit: int | None = None, countrie
     model = model_name("desk", client)
     cf, cp = country_filter(countries)
     pending = db.fetchall(
-        "select id, country from pipeline.story_clusters where status = 'pending'" + cf + " order by id"
+        "select id, country, category from pipeline.story_clusters where status = 'pending'" + cf + " order by id"
         + (f" limit {int(limit)}" if limit else ""), cp
     )
     for c in pending:
         items = cluster_items(db, c["id"])
         if not items:
             continue
+        cat = c.get("category") or categories.default()
+        keys = categories.dimension_keys(cat)
         try:
             out = client.generate_json(
                 model=model,
-                system=SYSTEM.format(country_name=COUNTRY_NAMES.get(c["country"], c["country"])),
-                prompt=_prompt(c["country"], items),
-                schema=EVAL_SCHEMA,
+                system=system_prompt(cat, c["country"]),
+                prompt=_prompt(c["country"], items, cat),
+                schema=eval_schema(cat),
                 temperature=0.1,
                 task="evaluate",
             )
-            scores = {d: max(1, min(5, int(out[d]))) for d in DIMENSIONS}
+            scores = {d: max(1, min(5, int(out[d]))) for d in keys}
         except (LLMError, KeyError, ValueError, TypeError) as exc:
             log.warning("evaluation failed for cluster %s: %s", c["id"], exc)
             stats["errors"] += 1
             continue
         flags = list(out.get("flags") or [])
-        score = impact_score(scores, items)
-        decision = decide(score, flags)
+        score = impact_score(scores, items, cat)
+        decision = decide(score, flags, cat)
+        legacy = [scores.get(d) for d in DIMENSIONS] if set(DIMENSIONS) <= set(scores) else [None] * len(DIMENSIONS)
         db.insert(
             """insert into pipeline.evaluations
-               (cluster_id, model, wallet_impact, breadth, actionability, urgency, novelty,
+               (cluster_id, model, wallet_impact, breadth, actionability, urgency, novelty, scores,
                 flags, impact_score, decision, angle, audience, rationale, created_at)
-               values (?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
-            (c["id"], model, *[scores[d] for d in DIMENSIONS], db.j(flags), score, decision,
+               values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
+            (c["id"], model, *legacy, db.j(scores), db.j(flags), score, decision,
              out.get("angle"), db.j(out.get("audience") or []), out.get("rationale"), utcnow()),
         )
         db.execute("update pipeline.story_clusters set status = 'evaluated', updated_at = ? where id = ?", (utcnow(), c["id"]))
@@ -152,20 +141,21 @@ def commission(db: Database, countries: list[str] | None = None) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(hours=int(desk.get("lookback_hours", 72)))).isoformat()
     cf, cp = country_filter(countries, "c.country")
     rows = db.fetchall(
-        """select c.id as cluster_id, c.country, c.headline, e.impact_score, e.angle, e.audience, e.id as evaluation_id
+        """select c.id as cluster_id, c.country, c.category, c.headline, e.impact_score, e.angle, e.audience, e.id as evaluation_id
            from pipeline.story_clusters c
            join pipeline.evaluations e on e.id = (select max(id) from pipeline.evaluations where cluster_id = c.id)
            where c.status = 'evaluated' and e.decision = 'run' and c.created_at >= ?""" + cf + """
            order by e.impact_score desc""",
         (since, *cp),
     )
-    per_country: dict[str, int] = {}
+    per_slot: dict[tuple, int] = {}
     chosen = []
     for r in rows:
-        n = per_country.get(r["country"], 0)
-        if n >= int(desk.get("max_stories_per_country", 4)):
+        slot = (r["country"], r.get("category") or categories.default())
+        n = per_slot.get(slot, 0)
+        if n >= int(desk.get("max_stories_per_country", 4)):   # per country and category
             continue
-        per_country[r["country"]] = n + 1
+        per_slot[slot] = n + 1
         r["audience"] = db.unj(r["audience"], [])
         chosen.append(r)
         db.execute("update pipeline.story_clusters set status = 'commissioned', updated_at = ? where id = ?", (utcnow(), r["cluster_id"]))
@@ -175,7 +165,7 @@ def commission(db: Database, countries: list[str] | None = None) -> list[dict]:
 
 def desk_report(db: Database, limit: int = 30) -> list[dict]:
     rows = db.fetchall(
-        """select c.id, c.country, c.headline, c.item_count, c.status, e.impact_score, e.decision, e.flags, e.angle
+        """select c.id, c.country, c.category, c.headline, c.item_count, c.status, e.impact_score, e.decision, e.flags, e.angle
            from pipeline.story_clusters c
            left join pipeline.evaluations e on e.id = (select max(id) from pipeline.evaluations where cluster_id = c.id)
            order by coalesce(e.impact_score, -1) desc, c.id desc limit ?""",

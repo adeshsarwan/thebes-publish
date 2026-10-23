@@ -40,6 +40,7 @@ class Settings:
     feeds: dict = field(repr=False)
     taxonomy: dict = field(repr=False)
     editorial: dict = field(repr=False)
+    categories: dict = field(repr=False, default_factory=dict)
 
     def db_url(self, component: str) -> str:
         """Connection URL for 'pipeline', 'newsroom', 'site' or 'admin'."""
@@ -70,4 +71,5 @@ def get_settings() -> Settings:
         feeds=_load("feeds.yaml"),
         taxonomy=_load("taxonomy.yaml"),
         editorial=_load("editorial.yaml"),
+        categories=_load("categories.yaml"),
     )

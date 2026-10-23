@@ -171,8 +171,18 @@ def _require_admin(actor: dict) -> None:
         raise AuthError("Only an admin can manage the team.")
 
 
+def _clean_categories(cats) -> list[str]:
+    from pipeline import categories
+    cats = [c for c in (cats or []) if c]
+    bad = [c for c in cats if not categories.valid(c)]
+    if bad:
+        raise AuthError(f"Unknown category: {', '.join(bad)}.")
+    return [c for c in categories.ids() if c in cats]     # config order, no duplicates
+
+
 def create_user(db: Database, actor: dict | None, *, email: str, display_name: str, role: str,
-                job_title: str = "", bio: str = "", password: str | None = None) -> tuple[dict, str | None]:
+                job_title: str = "", bio: str = "", password: str | None = None,
+                categories: list[str] | None = None) -> tuple[dict, str | None]:
     """Create a staff account. Returns (user, temporary password or None if one was given)."""
     if actor is not None:
         _require_admin(actor)
@@ -184,6 +194,7 @@ def create_user(db: Database, actor: dict | None, *, email: str, display_name: s
         raise AuthError("Enter the person's name.")
     if role not in ROLES:
         raise AuthError("Choose a role.")
+    cats = _clean_categories(categories)
     if db.fetchone("select id from newsroom.users where lower(email) = ?", (email,)):
         raise AuthError("Someone on the team already uses that email.")
     temp = None
@@ -197,17 +208,18 @@ def create_user(db: Database, actor: dict | None, *, email: str, display_name: s
     while db.fetchone("select id from newsroom.users where slug = ?", (slug,)):
         slug, n = f"{base}-{n}", n + 1
     uid = db.insert(
-        """insert into newsroom.users (email, display_name, slug, role, job_title, bio, is_placeholder, active,
+        """insert into newsroom.users (email, display_name, slug, role, categories, job_title, bio, is_placeholder, active,
                                        password_hash, must_change_password, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?) returning id""",
-        (email, display_name, slug, role, job_title.strip() or None, bio.strip() or None, False, True,
+           values (?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
+        (email, display_name, slug, role, db.j(cats), job_title.strip() or None, bio.strip() or None, False, True,
          hash_password(password), temp is not None, utcnow()))
     db.commit()
     return db.fetchone("select * from newsroom.users where id = ?", (uid,)), temp
 
 
 def update_user(db: Database, actor: dict, user_id: int, *, role: str | None = None, active: bool | None = None,
-                job_title: str | None = None, display_name: str | None = None, bio: str | None = None) -> None:
+                job_title: str | None = None, display_name: str | None = None, bio: str | None = None,
+                categories: list[str] | None = None) -> None:
     _require_admin(actor)
     target = db.fetchone("select * from newsroom.users where id = ?", (user_id,))
     if not target:
@@ -232,6 +244,8 @@ def update_user(db: Database, actor: dict, user_id: int, *, role: str | None = N
         sets["display_name"] = display_name.strip()
     if bio is not None:
         sets["bio"] = bio.strip() or None
+    if categories is not None:
+        sets["categories"] = db.j(_clean_categories(categories))
     if sets:
         db.execute(f"update newsroom.users set {', '.join(k + ' = ?' for k in sets)} where id = ?", (*sets.values(), user_id))
     if active is False:

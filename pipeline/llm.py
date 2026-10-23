@@ -142,7 +142,7 @@ class MockClient:
     def generate_json(self, *, model: str, system: str, prompt: str, schema: dict,
                       temperature: float = 0.4, task: str = "") -> dict:
         if task == "evaluate":
-            return self._evaluate(prompt)
+            return self._evaluate(prompt, schema)
         if task == "write":
             return self._write(prompt)
         raise LLMError(f"MockClient has no handler for task {task!r}")
@@ -160,19 +160,26 @@ class MockClient:
                             {"title": "example-data.gov", "url": "https://example-data.gov/yields"}]}
 
     @staticmethod
-    def _evaluate(prompt: str) -> dict:
+    def _evaluate(prompt: str, schema: dict | None = None) -> dict:
+        """Scores whatever dimensions the category's schema asks for."""
+        props = (schema or {}).get("properties") or {}
+        dims = [k for k, v in props.items() if v.get("type") == "INTEGER"] or \
+            ["wallet_impact", "breadth", "actionability", "urgency", "novelty"]
+        allowed = set(((props.get("flags") or {}).get("items") or {}).get("enum") or [])
         p = prompt.lower()
-        hot = any(k in p for k in ("rate", "cpi", "inflation", "tax", "mortgage", "fee", "refund", "penalt"))
-        promo = any(k in p for k in ("perks", "upgrade", "amenities", "warranty"))
+        hot = any(k in p for k in ("rate", "cpi", "inflation", "tax", "mortgage", "fee", "refund", "penalt",
+                                   "championship", "final", "transfer", "injur", "record",
+                                   "premiere", "release date", "award", "album",
+                                   "study", "guidelines", "exercise", "sleep"))
+        promo = any(k in p for k in ("perks", "upgrade", "amenities", "warranty", "giveaway"))
         if promo:
-            scores = dict(wallet_impact=2, breadth=1, actionability=2, urgency=1, novelty=2)
-            flags = ["promotional"]
+            scores, flags = dict.fromkeys(dims, 2), ["promotional"]
         elif hot:
-            scores = dict(wallet_impact=5, breadth=4, actionability=4, urgency=4, novelty=4)
-            flags = []
+            scores, flags = {d: (5 if i == 0 else 4) for i, d in enumerate(dims)}, []
         else:
-            scores = dict(wallet_impact=2, breadth=2, actionability=1, urgency=1, novelty=3)
-            flags = ["corporate_admin"]
+            scores, flags = dict.fromkeys(dims, 2), ["corporate_admin"]
+            scores[dims[0]] = 1
+        flags = [f for f in flags if not allowed or f in allowed]
         return {
             **scores,
             "flags": flags,

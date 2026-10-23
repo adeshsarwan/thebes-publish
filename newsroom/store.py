@@ -6,6 +6,7 @@ stored the same way.
 """
 from __future__ import annotations
 
+from pipeline import categories
 from pipeline.db import Database, utcnow
 
 from . import blocks as blk
@@ -19,19 +20,23 @@ SECTION_TITLES = {
 }
 
 
-def assemble_markdown(content: dict) -> str:
-    """Story body as markdown (no disclosure; the site renders that with the byline)."""
+def assemble_markdown(content: dict, category: str | None = None) -> str:
+    """Story body as markdown (no disclosure; the site renders that with the byline).
+
+    Section titles come from the story's category (finance: "What it means for your money", ...).
+    """
+    titles = categories.section_titles(category or content.get("category"))
     md = [f"# {content['headline']}", ""]
     if content.get("dek"):
         md += [f"*{content['dek']}*", ""]
     for key in PROSE_KEYS:
         text = (content.get("sections") or {}).get(key, "").strip()
         if text:
-            md += [f"## {SECTION_TITLES[key]}", "", text, ""]
+            md += [f"## {titles[key]}", "", text, ""]
     if content.get("action_steps"):
-        md += ["## What to do now", ""] + [f"{i}. {s}" for i, s in enumerate(content["action_steps"], 1)] + [""]
+        md += [f"## {titles['action_steps']}", ""] + [f"{i}. {s}" for i, s in enumerate(content["action_steps"], 1)] + [""]
     if content.get("takeaways"):
-        md += ["## Key takeaways", ""] + [f"- {t}" for t in content["takeaways"]] + [""]
+        md += [f"## {titles['takeaways']}", ""] + [f"- {t}" for t in content["takeaways"]] + [""]
     if content.get("sources"):
         md += ["## Sources", ""] + [f"- {r['name']}: [{r['title']}]({r['url']})" for r in content["sources"]] + [""]
     return "\n".join(md)
@@ -53,7 +58,9 @@ def add_revision(db: Database, story_id: int, version: int, content: dict, *, au
                  model: str | None = None, note: str | None = None) -> int:
     """Store a version. AI drafts have fixed sections; block-editor versions carry `blocks`."""
     blocks = content.get("blocks")
-    body = blk.blocks_markdown(content) if blocks else assemble_markdown(content)
+    category = content.get("category") or (db.fetchone(
+        "select category from newsroom.stories where id = ?", (story_id,)) or {}).get("category")
+    body = blk.blocks_markdown(content) if blocks else assemble_markdown(content, category)
     return db.insert(  # type: ignore[return-value]
         """insert into newsroom.story_revisions
            (story_id, version, author_kind, author_id, headline, dek, sections, takeaways, action_steps,
@@ -83,17 +90,18 @@ def log_event(db: Database, story_id: int, action: str, *, actor_id: int | None 
 def create_ai_draft(db: Database, *, cluster_id: int, country: str, slug: str, content: dict,
                     guardrails: dict, model: str, impact_score: float | None, angle: str | None,
                     attempts: int, origin: str = "pipeline", picked_by: int | None = None,
-                    research: dict | None = None) -> int:
+                    research: dict | None = None, category: str | None = None) -> int:
     now = utcnow()
+    category = category if categories.valid(category) else categories.default()
     story_id = db.insert(
         """insert into newsroom.stories
-           (cluster_id, country, slug, status, current_version, impact_score, angle, origin, picked_by, research,
+           (cluster_id, country, category, slug, status, current_version, impact_score, angle, origin, picked_by, research,
             created_at, updated_at)
-           values (?,?,?,'ai_draft',1,?,?,?,?,?,?,?) returning id""",
-        (cluster_id, country, slug, impact_score, angle, origin, picked_by,
+           values (?,?,?,?,'ai_draft',1,?,?,?,?,?,?,?) returning id""",
+        (cluster_id, country, category, slug, impact_score, angle, origin, picked_by,
          db.j(research) if research is not None else None, now, now),
     )
-    add_revision(db, story_id, 1, content, author_kind="ai", guardrails=guardrails, model=model,
+    add_revision(db, story_id, 1, dict(content, category=category), author_kind="ai", guardrails=guardrails, model=model,
                  note=f"AI draft, {attempts} attempt(s)" + (" (editor pick, with AI research)" if research else
                                                             " (editor pick)" if origin == "editor_pick" else ""))
     status = "passed guardrails" if guardrails.get("passed") else "has guardrail issues"
@@ -128,6 +136,7 @@ def revision_content(rev: dict) -> dict:
                                     "topics", "meta_description", "sources", "blocks")}
 
 
-def editor_blocks(rev: dict) -> list[dict]:
-    """Blocks to open in the editor: the version's own, or the AI sections converted."""
-    return rev.get("blocks") or blk.content_to_blocks(revision_content(rev))
+def editor_blocks(rev: dict, category: str | None = None) -> list[dict]:
+    """Blocks to open in the editor: the version's own, or the AI sections converted
+    (with the category's section titles)."""
+    return rev.get("blocks") or blk.content_to_blocks(revision_content(rev), categories.section_titles(category))

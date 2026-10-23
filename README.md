@@ -140,3 +140,20 @@ The Postgres run creates a throwaway database per test, with the real schema and
 | `config/taxonomy.yaml` | topic keywords, locale, glossary, market-exclusive terms |
 | `config/editorial.yaml` | desk weights and thresholds, style guide prompt, guardrail limits |
 | `.env` | Gemini key and models, `APP_ENV`, database URLs |
+
+## Categories
+
+Stories come in categories: **Finance, Sports, Entertainment, Fitness & health**. They're defined in `config/categories.yaml`.
+
+- **Where the category comes from:** every RSS source belongs to one category. You pick it when you add a feed on the Sources page.
+- **Each category has its own approach:**
+  - the scoring desk's rubric (finance: wallet impact; sports: fan interest and stakes; and so on);
+  - run and hold thresholds;
+  - the title pre-filter;
+  - the writer's style and section titles (sports: "Why it matters", "What to watch next");
+  - extra checks (sports: no betting tips; fitness: no medical advice);
+  - the disclosure printed under the story;
+  - auto-publishing. Fitness & health is always reviewed by a person.
+- **Staff:** admins tick the categories each person works on (Team page). People only see and act on stories in their categories. Nothing ticked means all categories, and admins always see everything.
+- **Moving a story:** editors can move a story to another category from the story page.
+- **Adding a category:** add a block to `categories.yaml` with its desk, writer, guardrails and disclosure, then add feeds for it.

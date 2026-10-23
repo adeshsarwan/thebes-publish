@@ -22,6 +22,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
+from pipeline import categories
 from pipeline.cluster import cluster_items
 from pipeline.db import Database, connect
 from pipeline.settings import COUNTRY_NAMES, get_settings
@@ -141,7 +142,7 @@ h1.page{font-family:var(--serif);font-size:27px;margin:0 0 4px}.sub{color:var(--
 .pill{display:inline-block;border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap}
 .s-ai_draft,.s-in_review{background:var(--info-bg);color:var(--info)}.s-in_copy{background:var(--warn-bg);color:var(--warn)}
 .s-approved,.s-published,.run{background:var(--good-bg);color:var(--good)}.s-unpublished,.s-killed,.reject{background:var(--bad-bg);color:var(--bad)}
-.hold{background:var(--warn-bg);color:var(--warn)}.pending{background:var(--line);color:var(--muted)}
+.hold{background:var(--warn-bg);color:var(--warn)}.pill.cat{background:transparent;border:1px solid var(--line);color:var(--ink)}.pending{background:var(--line);color:var(--muted)}
 .bad{color:var(--bad)}.brief{font-size:14px;line-height:1.6}.brief h3{font-size:13px;margin:14px 0 4px}.timeline-line{font-size:13px;color:var(--muted);margin:4px 0 2px}.timeline-line b{color:var(--ink);font-weight:600}.gr-ok{background:var(--good-bg);color:var(--good)}.gr-bad{background:var(--bad-bg);color:var(--bad)}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:26px;align-items:start}
 article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:34px 42px;font-family:var(--serif);font-size:18px;line-height:1.65}
@@ -208,7 +209,7 @@ def page(title: str, active: str, body: str, user: dict | None, flash: tuple[str
     meta = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">{meta}
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(title)} · Newsroom</title>
-<style>{CSS}</style></head><body><header><div class="bar"><div class="brand">Finance Hub<small>Newsroom</small></div>
+<style>{CSS}</style></head><body><header><div class="bar"><div class="brand">{e(wf.publication_name())}<small>Newsroom</small></div>
 <nav>{nav}</nav>{who}</div></header><main{' class="wide"' if wide else ''}>{fl}{body}</main></body></html>"""
 
 
@@ -247,27 +248,62 @@ def tz_label() -> str:
     return datetime.now().astimezone().strftime("%Z") or "local time"
 
 
-def dims_html(r: dict) -> str:
-    rows = [f'<span>{label}</span><span class="b"><i style="width:{int(r[k]) * 20}%"></i></span><b>{int(r[k])}</b>'
-            for k, label in DIMS if r.get(k) is not None]
+def dims_html(r: dict, category: str | None = None) -> str:
+    """The desk's dimension scores, labelled with the category's own rubric."""
+    cat = category or r.get("category")
+    scores = Database.unj(r.get("scores"), None) or {k: r.get(k) for k, _ in DIMS if r.get(k) is not None}
+    dims = [(d["key"], d.get("label") or d["key"]) for d in categories.dimensions(cat)] or list(DIMS)
+    rows = [f'<span>{e(label)}</span><span class="b"><i style="width:{int(scores[k]) * 20}%"></i></span><b>{int(scores[k])}</b>'
+            for k, label in dims if scores.get(k) is not None]
     return f'<div class="dims">{"".join(rows)}</div>' if rows else "<div></div>"
+
+
+def cat_pill(cat: str | None) -> str:
+    cat = cat or categories.default()
+    return f'<span class="pill cat">{e(categories.name(cat))}</span>'
+
+
+def in_scope(rows: list[dict], user: dict | None, key: str = "category") -> list[dict]:
+    """Only the rows in categories this person works on (no user: internal call, everything)."""
+    if user is None:
+        return rows
+    scope = categories.user_scope(user)
+    if scope is None:
+        return rows
+    return [r for r in rows if (r.get(key) or categories.default()) in scope]
+
+
+def category_chips(q: dict, base: str, user: dict | None, counts: dict | None = None) -> str:
+    opts = [(c, n) for c, n in categories.choices() if categories.can_access(user, c)]
+    if len(opts) < 2:
+        return ""
+    return f'<div class="tabs">{_filter_chips(q, base, "cat", [("", "All categories")] + opts, counts)}</div>'
+
+
+def no_access(cat: str | None) -> tuple[str, str]:
+    return ("Not your category", f'<div class="empty">This is a {e(categories.name(cat))} story, and you don\'t work on '
+            f'{e(categories.name(cat))}. An admin can change your categories on the Team page.</div>')
 
 
 # --------------------------------------------------------------------------- pages
 def queue_page(db: Database, actor: dict | None, q: dict) -> tuple[str, str]:
-    counts = wf.queue_counts(db)
+    scope = categories.user_scope(actor)
+    cat = q.get("cat", [""])[0]
+    only = {cat} if cat and categories.can_access(actor, cat) else scope
+    counts = wf.queue_counts(db, only)
     key = q.get("q", [wf.DEFAULT_QUEUE.get(actor["role"], "editor") if actor else "editor"])[0]
     mine = q.get("mine", [""])[0] == "1"
     tabs = []
     current = wf.QUEUES[0]
+    cat_qs = f"&cat={quote(cat)}" if cat else ""
     for k, label, statuses in wf.QUEUES:
         n = sum(counts.get(s, 0) for s in statuses)
         if k == key:
             current = (k, label, statuses)
-        tabs.append(f'<a class="tab {"on" if k == key else ""}" href="/?q={k}">{label}<b>{n}</b></a>')
+        tabs.append(f'<a class="tab {"on" if k == key else ""}" href="/?q={k}{cat_qs}">{label}<b>{n}</b></a>')
     if actor and actor["role"] == "copywriter":
-        tabs.append(f'<a class="tab {"on" if mine else ""}" href="/?q=copy&mine=1">Assigned to me</a>')
-    rows = wf.queue(db, current[2], assigned_to=actor["id"] if (mine and actor) else None)
+        tabs.append(f'<a class="tab {"on" if mine else ""}" href="/?q=copy&mine=1{cat_qs}">Assigned to me</a>')
+    rows = wf.queue(db, current[2], assigned_to=actor["id"] if (mine and actor) else None, only_categories=only)
     items = []
     for r in rows:
         score = f'{r["impact_score"]:.0f}' if r.get("impact_score") is not None else "–"
@@ -278,12 +314,13 @@ def queue_page(db: Database, actor: dict | None, q: dict) -> tuple[str, str]:
             who.append(f"Editor: {e(r['editor_name'])}")
         origin = "AI draft" if r["author_kind"] == "ai" and r["current_version"] == 1 else f"v{r['current_version']}"
         items.append(f"""<div class="row"><div class="score">{score}<small>impact</small></div>
-<div><div class="meta">{status_pill(r['status'])} {gr_pill(r['guardrails'])} {AUTO_PILL if r.get('auto_published') else ''}{PICK_PILL if r.get('origin') == 'editor_pick' else ''} &nbsp;{e(COUNTRY_NAMES.get(r['country'], r['country']))} · {origin} · {r.get('word_count') or 0} words · updated {when(r['updated_at'])}</div>
+<div><div class="meta">{cat_pill(r.get('category'))} {status_pill(r['status'])} {gr_pill(r['guardrails'])} {AUTO_PILL if r.get('auto_published') else ''}{PICK_PILL if r.get('origin') == 'editor_pick' else ''} &nbsp;{e(COUNTRY_NAMES.get(r['country'], r['country']))} · {origin} · {r.get('word_count') or 0} words · updated {when(r['updated_at'])}</div>
 <div class="hl"><a href="/story/{r['id']}">{e(r['headline'])}</a></div>
 <div class="meta">{' · '.join(who) or e(r.get('angle') or '')}</div></div>
 <div><a class="btn" href="/story/{r['id']}">Open</a></div></div>""")
     body = (f'<h1 class="page">Stories</h1><p class="sub">AI drafts arrive here from the pipeline. Editors approve or assign them; '
-            f'publishers put approved stories live.</p><div class="tabs">{"".join(tabs)}</div>'
+            f'publishers put approved stories live.' + (f' You work on: {e(categories.scope_label(actor))}.' if scope is not None else '')
+            + f'</p>{category_chips(q, "/", actor)}<div class="tabs">{"".join(tabs)}</div>'
             + ("".join(items) or '<div class="empty">Nothing in this queue.</div>'))
     return "Stories", body
 
@@ -314,9 +351,11 @@ def actions_box(db: Database, story: dict, actor: dict, g: dict | None = None, h
     for a in allowed:
         extra = ""
         if a == "assign":
-            copywriters = copywriters if copywriters is not None else list_users(db, "copywriter")
+            copywriters = copywriters if copywriters is not None else [
+                u for u in list_users(db, "copywriter") if categories.can_access(u, story.get("category"))]
             if not copywriters:
-                forms.append('<div class="meta">No copy editors yet. Add one on the Team page to assign stories.</div>')
+                forms.append(f'<div class="meta">No copy editors work on {e(categories.name(story.get("category")))} yet. '
+                             'Add one, or give one this category, on the Team page.</div>')
                 continue
             opts = "".join(f'<option value="{u["id"]}" {"selected" if u["id"] == story.get("assigned_to") else ""}>{e(u["display_name"])}</option>' for u in copywriters)
             extra = f'<label>Copy editor</label><select name="assignee_id" style="width:100%">{opts}</select>'
@@ -391,6 +430,8 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
     story = get_story(db, story_id)
     if not story:
         return None
+    if not categories.can_access(actor, story.get("category")):
+        return no_access(story.get("category"))
     rev = story["revision"]
     if version and version != story["current_version"]:
         r = db.fetchone("select * from newsroom.story_revisions where story_id = ? and version = ?", (story_id, version))
@@ -426,6 +467,7 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
         ("Version", f'v{story["current_version"]}'), ("Copy editor", e(names.get(story.get("assigned_to"), "—"))),
         ("Responsible editor" if story.get("auto_published") and story["status"] == "published" else "Byline (approving editor)",
          e(names.get(story.get("editor_id"), "—"))),
+        ("Category", cat_pill(story.get("category"))),
         ("Country", e(story["country"])), ("Impact score", f'{story["impact_score"]:.0f}' if story.get("impact_score") is not None else "—"),
     ))
     events = db.fetchall(
@@ -440,7 +482,7 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
         ev_row = db.fetchone("select * from pipeline.evaluations where cluster_id = ? order by id desc limit 1", (story["cluster_id"],))
     desk = ""
     if ev_row:
-        desk = (f'<div class="box"><h3>How the desk scored it</h3>{dims_html(ev_row)}'
+        desk = (f'<div class="box"><h3>How the desk scored it</h3>{dims_html(ev_row, story.get("category"))}'
                 f'<p class="angle" style="font-size:14px">{e(ev_row.get("angle") or "")}</p><div class="why">{e(ev_row.get("rationale") or "")}</div></div>')
 
     research_html = ""
@@ -464,10 +506,25 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
     on_site = (f' · <a href="/site/{quote(story["slug"])}">View on site</a>' if site_row else "")
     body = f"""<p class="sub"><a href="/">← Stories</a> · <a href="/story/{story_id}/history">History &amp; versions</a>{on_site} · slug <code>{e(story['slug'])}</code></p>
 {banner}<div class="layout"><div>{article_html(rev)}{research_html}{origin_timeline(db, story)}</div>
-<aside>{actions_html}<div class="box"><h3>Story</h3><div class="kv">{info}</div></div>
+<aside>{actions_html}<div class="box"><h3>Story</h3><div class="kv">{info}</div>{move_category_form(story, actor)}</div>
 <div class="box"><h3>Guardrails · v{rev['version']}</h3>{issues_html}<div class="kv" style="margin-top:10px">{kv}</div></div>
 {desk}<div class="box"><h3>Recent activity</h3><div class="timeline">{tl}</div></div></aside></div>"""
     return rev["headline"], body
+
+
+def move_category_form(story: dict, actor: dict | None) -> str:
+    """Editors and admins can move a story to another category they work on."""
+    if not actor or actor["role"] not in ("editor", "admin") or story["status"] == "killed":
+        return ""
+    cur = story.get("category") or categories.default()
+    opts = [(c, n) for c, n in categories.choices() if categories.can_access(actor, c)]
+    if len(opts) < 2 or not categories.can_access(actor, cur):
+        return ""
+    options = "".join(f'<option value="{e(c)}" {"selected" if c == cur else ""}>{e(n)}</option>' for c, n in opts)
+    return (f'<form class="act" method="post" action="/story/{story["id"]}/category" style="margin-top:12px">'
+            f'<label>Move to another category</label><select name="category" style="width:100%">{options}</select>'
+            '<p class="meta" style="margin:6px 0">Changes the queue and the site section. The text keeps its current '
+            'section headings until it is edited.</p><button>Move story</button></form>')
 
 
 def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | None = None) -> tuple[str, str] | None:
@@ -475,6 +532,8 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     story = get_story(db, story_id)
     if not story:
         return None
+    if not categories.can_access(actor, story.get("category")):
+        return no_access(story.get("category"))
     if not wf.can_edit(story, actor):
         return "Can't edit", f'<div class="empty">You can\'t edit this story at its current stage. <a href="/story/{story_id}">Back</a></div>'
     rev = story["revision"]
@@ -519,6 +578,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     names = {u["id"]: u["display_name"] for u in db.fetchall(
         "select id, display_name from newsroom.users where id in (?, ?)", (story.get("assigned_to") or 0, story.get("editor_id") or 0))}
     status_kv = "".join(f"<span>{k}</span><b>{v}</b>" for k, v in (
+        ("Category", e(categories.name(story.get("category")))),
         ("Status", e(wf.LABELS[story["status"]])),
         ("On the site", f'Live v{story["live_version"]}' if story.get("live") else "Not live"),
         ("Copy editor", e(names.get(story.get("assigned_to"), "—"))),
@@ -555,9 +615,9 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <kbd>⌘B</kbd><span>bold</span><kbd>⌘I</kbd><span>italic</span><kbd>⌘K</kbd><span>link (select text first)</span><kbd>⌘S</kbd><span>save draft</span>
 </div></section></aside>"""
 
-    cfgs = get_settings().editorial["guardrails"]
+    cfgs = categories.guardrails(story.get("category"))
     data = {"story_id": story_id, "version": story["current_version"], "headline": rev["headline"], "dek": rev.get("dek") or "",
-            "blocks": editor_blocks(rev), "min_words": cfgs["min_words"], "max_words": cfgs["max_words"]}
+            "blocks": editor_blocks(rev, story.get("category")), "min_words": cfgs["min_words"], "max_words": cfgs["max_words"]}
     data_json = json.dumps(data).replace("<", "\\u003c")
     body = f"""<link rel="stylesheet" href="/static/editor.css">
 {toolbar}
@@ -590,10 +650,12 @@ def diff_link(story_id: int, version: int) -> str:
     return f'<a href="/story/{story_id}/diff/{version}">diff</a>' if version > 1 else ""
 
 
-def history_page(db: Database, story_id: int) -> tuple[str, str] | None:
+def history_page(db: Database, story_id: int, actor: dict | None = None) -> tuple[str, str] | None:
     story = get_story(db, story_id)
     if not story:
         return None
+    if actor is not None and not categories.can_access(actor, story.get("category")):
+        return no_access(story.get("category"))
     revs = db.fetchall(
         """select r.version, r.author_kind, r.note, r.created_at, r.word_count, r.guardrails, u.display_name
            from newsroom.story_revisions r left join newsroom.users u on u.id = r.author_id
@@ -618,7 +680,11 @@ def history_page(db: Database, story_id: int) -> tuple[str, str] | None:
     return "History", body
 
 
-def diff_page(db: Database, story_id: int, version: int) -> tuple[str, str] | None:
+def diff_page(db: Database, story_id: int, version: int, actor: dict | None = None) -> tuple[str, str] | None:
+    if actor is not None:
+        st = db.fetchone("select category from newsroom.stories where id = ?", (story_id,))
+        if st and not categories.can_access(actor, st.get("category")):
+            return no_access(st.get("category"))
     a = db.fetchone("select body_md from newsroom.story_revisions where story_id = ? and version = ?", (story_id, version - 1))
     b = db.fetchone("select body_md from newsroom.story_revisions where story_id = ? and version = ?", (story_id, version))
     if not a or not b:
@@ -676,9 +742,9 @@ def scoring_page(db: Database, q: dict, user: dict | None = None) -> tuple[str, 
     sort = sort if sort in SCORING_SORTS else "pulled"
     only_last = q.get("pull", [""])[0] == "last"
     rows = db.fetchall(
-        """select c.id, c.country, c.headline, c.item_count, c.status,
+        """select c.id, c.country, c.category, c.headline, c.item_count, c.status,
                   e.impact_score, e.decision, e.flags, e.angle, e.rationale, e.created_at as scored_at,
-                  e.wallet_impact, e.breadth, e.actionability, e.urgency, e.novelty,
+                  e.wallet_impact, e.breadth, e.actionability, e.urgency, e.novelty, e.scores,
                   (select url from pipeline.raw_items where id = c.lead_item_id) as lead_url,
                   (select min(r.fetched_at) from pipeline.raw_items r where r.cluster_id = c.id) as first_pulled,
                   (select max(r.fetched_at) from pipeline.raw_items r where r.cluster_id = c.id) as last_pulled,
@@ -696,10 +762,17 @@ def scoring_page(db: Database, q: dict, user: dict | None = None) -> tuple[str, 
     last_start = _last_pull_start(db)
     picks = pick_mod.latest_requests(db)
     may_pick = pick_mod.can_pick(user)
+    rows = in_scope(rows, user)
+    cat = q.get("cat", [""])[0]
     if only_last and last_start:
         rows = [r for r in rows if (r.get("last_pulled") or "") >= last_start]
     if country:
         rows = [r for r in rows if r["country"] == country]
+    cat_counts: dict[str, int] = {}
+    for r in rows:
+        cat_counts[r.get("category") or categories.default()] = cat_counts.get(r.get("category") or categories.default(), 0) + 1
+    if cat:
+        rows = [r for r in rows if (r.get("category") or categories.default()) == cat]
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["decision"] or "pending"] = counts.get(r["decision"] or "pending", 0) + 1
@@ -747,11 +820,11 @@ def scoring_page(db: Database, q: dict, user: dict | None = None) -> tuple[str, 
             steps.append(f'{live} {when(r["live_at"])}' + (" (since retracted)" if r.get("site_status") == "retracted" else ""))
         src = ", ".join(sources.get(r["id"], []))
         cards.append(f"""<div class="card" id="c{r['id']}"><div class="big">{score}</div><div>
-<div class="meta"><span class="pill {e(r['decision'] or 'pending')}">{e(r['decision'] or 'pending')}</span> {e(r['country'])} · {r['item_count']} item(s) · {e(src)}{link}</div>
+<div class="meta">{cat_pill(r.get('category'))} <span class="pill {e(r['decision'] or 'pending')}">{e(r['decision'] or 'pending')}</span> {e(r['country'])} · {r['item_count']} item(s) · {e(src)}{link}</div>
 <div class="hl">{head}</div><div class="timeline-line">{" → ".join(steps)}</div>{flags}{angle}<div class="why">{e(r.get('rationale') or '')}</div>{pick_html}</div>{dims_html(r)}</div>""")
     body = (f'<h1 class="page">Scoring desk</h1><p class="sub">Every story the pipeline found, when it was pulled, and how the AI '
-            f'assignment editor scored it. Stories marked run become AI drafts. Times are this computer\'s time ({e(tz_label())}).</p>'
-            f'{_view_tabs("stories")}<div class="tabs">{dec_tabs}</div><div class="tabs">{country_chips}<span style="width:8px"></span>{pull_chip}</div>'
+            f'assignment editor for its category scored it. Stories marked run become AI drafts. Times are this computer\'s time ({e(tz_label())}).</p>'
+            f'{_view_tabs("stories")}{category_chips(q, "/scoring", user, cat_counts)}<div class="tabs">{dec_tabs}</div><div class="tabs">{country_chips}<span style="width:8px"></span>{pull_chip}</div>'
             f'<div class="tabs"><span class="meta" style="align-self:center;margin-right:4px">Sort:</span>{sort_links}</div>'
             + ("".join(cards) or '<div class="empty">No stories match. Try another filter, or run a pull.</div>'))
     return "Scoring desk", body
@@ -762,6 +835,8 @@ def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = N
     c = db.fetchone("select * from pipeline.story_clusters where id = ?", (cluster_id,))
     if not c:
         return None
+    if not categories.can_access(user, c.get("category")):
+        return no_access(c.get("category"))
     ev = db.fetchone("select * from pipeline.evaluations where cluster_id = ? order by id desc limit 1", (cluster_id,)) or {}
     story = db.fetchone("select id from newsroom.stories where cluster_id = ?", (cluster_id,))
     req = db.fetchone(
@@ -800,7 +875,7 @@ def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = N
             checked = "checked" if f.get("research", "1") == "1" else ""
             form_html = f"""<form class="form panel" method="post" action="/scoring/{cluster_id}/pickup">
 <h2>Brief the AI</h2>
-<label>Angle: what should the story explain about readers' money?</label>
+<label>Angle: what should the story explain for {e(categories.name(c.get("category")))} readers?</label>
 <textarea name="angle" rows="3" required>{e(angle)}</textarea>
 <label>Audience (comma-separated)</label><input type="text" name="audience" value="{e(audience)}" placeholder="e.g. savers in their 30s, people near retirement">
 <label>Notes for the AI: what to research, check or emphasise</label>
@@ -811,7 +886,7 @@ def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = N
 <p><button class="primary">Research and draft</button>
 <span class="meta">The draft arrives in "Needs an editor", marked Editor pick. It is never published automatically.</span></p></form>"""
     body = (f'<p class="sub"><a href="/scoring">← Scoring desk</a></p><h1 class="page">Pick up: {e(c["headline"])}</h1>'
-            f'<p class="sub">{e(COUNTRY_NAMES.get(c["country"], c["country"]))} · desk decision {desk}</p>{err}{status}'
+            f'<p class="sub">{cat_pill(c.get("category"))} {e(COUNTRY_NAMES.get(c["country"], c["country"]))} · desk decision {desk}</p>{err}{status}'
             f'<div class="panel"><h2>From the feeds</h2><ul>{item_list}</ul></div>{form_html}')
     return "Pick up", body
 
@@ -823,7 +898,7 @@ def _item_outcome(r: dict) -> tuple[str, str]:
         if reason.startswith("older than"):
             return "too_old", f'<span class="pill pending">Too old</span> <span class="meta">{e(reason)}</span>'
         return "filtered", ('<span class="pill reject">Skipped</span> <span class="meta">title filter '
-                            '(reviews, promo codes, bank notes, appointments)</span>')
+                            '(promotions, reviews, betting and other non-news)</span>')
     if r["status"] == "new":
         return "waiting", '<span class="pill pending">Waiting</span> <span class="meta">not scored yet</span>'
     dec = r.get("decision") or "pending"
@@ -834,22 +909,27 @@ def _item_outcome(r: dict) -> tuple[str, str]:
     return "joined", f'{pill} <a class="meta" href="/scoring#c{r["cluster_id"]}">joined an existing story →</a>'
 
 
-def items_page(db: Database, q: dict) -> tuple[str, str]:
+def items_page(db: Database, q: dict, user: dict | None = None) -> tuple[str, str]:
     country = q.get("country", [""])[0]
     outcome = q.get("outcome", [""])[0]
     only_last = q.get("pull", [""])[0] == "last"
     rows = db.fetchall(
         """select r.id, r.fetched_at, r.published_at, r.title, r.url, r.status, r.filter_reason, r.country, r.cluster_id,
-                  so.name as source, e.decision, e.impact_score, c.lead_item_id
+                  so.name as source, so.category, e.decision, e.impact_score, c.lead_item_id
            from pipeline.raw_items r join pipeline.sources so on so.id = r.source_id
            left join pipeline.story_clusters c on c.id = r.cluster_id
            left join pipeline.evaluations e on e.id = (select max(id) from pipeline.evaluations where cluster_id = r.cluster_id)
            order by r.fetched_at desc, r.id desc limit 500""")
     last_start = _last_pull_start(db)
+    if user is not None:
+        rows = in_scope(rows, user)
     if only_last and last_start:
         rows = [r for r in rows if (r.get("fetched_at") or "") >= last_start]
     if country:
         rows = [r for r in rows if r["country"] == country]
+    cat = q.get("cat", [""])[0]
+    if cat:
+        rows = [r for r in rows if (r.get("category") or categories.default()) == cat]
     counts: dict[str, int] = {}
     for r in rows:
         r["_key"], r["_html"] = _item_outcome(r)
@@ -862,13 +942,13 @@ def items_page(db: Database, q: dict) -> tuple[str, str]:
     pull_chip = (f'<a class="tab {"on" if only_last else ""}" href="/scoring/items?{_qs(q, pull="" if only_last else "last")}">'
                  f'Last pull only{" · " + e(when(last_start)) if last_start else ""}</a>')
     trs = "".join(
-        f'<tr><td>{when(r["fetched_at"])}</td><td>{e(r["country"])}</td><td>{e(r["source"])}</td>'
+        f'<tr><td>{when(r["fetched_at"])}</td><td>{e(r["country"])}</td><td>{cat_pill(r.get("category"))}</td><td>{e(r["source"])}</td>'
         f'<td><a href="{e(r["url"])}" target="_blank" rel="noopener">{e(r["title"])}</a></td>'
         f'<td>{when(r.get("published_at")) or "–"}</td><td>{r["_html"]}</td></tr>' for r in rows)
     body = (f'<h1 class="page">Scoring desk</h1><p class="sub">Every item pulled from the feeds, newest first, and what happened to it. '
-            f'Times are this computer\'s time ({e(tz_label())}).</p>{_view_tabs("items")}<div class="tabs">{chips}</div>'
+            f'Times are this computer\'s time ({e(tz_label())}).</p>{_view_tabs("items")}{category_chips(q, "/scoring/items", user)}<div class="tabs">{chips}</div>'
             f'<div class="tabs">{country_chips}<span style="width:8px"></span>{pull_chip}</div>'
-            + (f'<table><tr><th>Pulled</th><th>Country</th><th>Source</th><th>Title</th><th>Published by source</th><th>What happened</th></tr>{trs}</table>'
+            + (f'<table><tr><th>Pulled</th><th>Country</th><th>Category</th><th>Source</th><th>Title</th><th>Published by source</th><th>What happened</th></tr>{trs}</table>'
                if rows else '<div class="empty">No items match.</div>'))
     return "Pulled items", body
 
@@ -902,7 +982,7 @@ def site_feed_page(site_db: Database, slug: str | None = None, db: Database | No
         if s.get("human_reviewed", True):
             credit = f'By <b>{e(s["display_name"])}</b>{title}'
         else:
-            credit = f'<b>Finance Hub newsroom</b> · Responsible editor: {e(s["display_name"])}{title}'
+            credit = f'<b>{e(wf.publication_name())} newsroom</b> · Responsible editor: {e(s["display_name"])}{title}'
         byline = (f'<div class="byline"><div class="avatar">{initials(s["display_name"])}</div><div>{credit}'
                   f'<br><span class="meta">Published {when(s["first_published_at"])}{updated}</span></div></div>')
         site_blocks = Database.unj(s.get("blocks"), None)
@@ -919,23 +999,23 @@ def site_feed_page(site_db: Database, slug: str | None = None, db: Database | No
             body = _site_desk(db, user, s, art) or body
         return s["headline"], body
     rows = site_db.fetchall(
-        """select p.slug, p.country, p.headline, p.status, p.version, p.first_published_at, p.updated_at, a.display_name
+        """select p.slug, p.country, p.category, p.headline, p.status, p.version, p.first_published_at, p.updated_at, a.display_name
            from site.published_stories p join site.authors a on a.id = p.author_id order by p.first_published_at desc""")
     trs = "".join(
-        f'<tr><td><a href="/site/{quote(r["slug"])}">{e(r["headline"])}</a></td><td>{e(r["country"])}</td><td>{e(r["display_name"])}</td>'
+        f'<tr><td><a href="/site/{quote(r["slug"])}">{e(r["headline"])}</a></td><td>{cat_pill(r.get("category"))}</td><td>{e(r["country"])}</td><td>{e(r["display_name"])}</td>'
         f'<td><span class="pill {"s-published" if r["status"] == "live" else "s-unpublished"}">{e(r["status"])}</span></td>'
         f'<td>v{r["version"]}</td><td>{when(r["first_published_at"])}</td><td>{when(r["updated_at"])}</td></tr>' for r in rows)
     body = ('<h1 class="page">Site feed</h1><p class="sub">The <code>site.published_stories</code> table, which is all the public website can read. '
             'Rows appear when a publisher publishes and change only through the newsroom.</p>'
-            + (f'<table><tr><th>Headline</th><th>Country</th><th>Byline</th><th>Status</th><th>Version</th><th>First published</th><th>Updated</th></tr>{trs}</table>'
+            + (f'<table><tr><th>Headline</th><th>Category</th><th>Country</th><th>Byline</th><th>Status</th><th>Version</th><th>First published</th><th>Updated</th></tr>{trs}</table>'
                if rows else '<div class="empty">Nothing published yet.</div>'))
     return "Site feed", body
 
 
 def _site_desk(db: Database, user: dict, site_row: dict, art: str) -> str | None:
     story = get_story(db, site_row["story_id"])
-    if not story:
-        return None
+    if not story or not categories.can_access(user, story.get("category")):
+        return None     # readers' view only
     here = f"/site/{site_row['slug']}"
     if site_row["status"] != "live":
         state = ('<div class="banner">Unpublished: readers can\'t see this story (the website returns 410 Gone). '
@@ -995,11 +1075,20 @@ def team_page(db: Database, user: dict, issued: dict | None = None) -> tuple[str
                   f'It is shown only once, and they will be asked to change it when they first sign in.</p>'
                   f'<div class="secret">{e(issued["password"])}</div></div>')
     role_opts = lambda cur: "".join(f'<option value="{r}" {"selected" if r == cur else ""}>{role_label(r)}</option>' for r in ROLES)
+
+    def cat_boxes(selected) -> str:
+        sel = set(selected or [])
+        return "".join(f'<label class="inline" style="margin-right:10px;white-space:nowrap"><input type="checkbox" name="cat_{e(c)}" value="1" '
+                       f'{"checked" if c in sel else ""}> {e(n)}</label>' for c, n in categories.choices())
     rows = []
     for u in users:
         controls = ""
+        u_cats = Database.unj(u.get("categories"), []) or []
         if is_admin:
-            controls = f"""<div class="row-actions">
+            cat_form = ("" if u["role"] == "admin" else
+                        f"""<form class="inline" method="post" action="/team/{u['id']}" style="display:block;margin-top:6px">
+<input type="hidden" name="op" value="categories">{cat_boxes(u_cats)} <button>Save categories</button></form>""")
+            controls = f"""{cat_form}<div class="row-actions">
 <form class="inline" method="post" action="/team/{u['id']}"><input type="hidden" name="op" value="role">
 <select name="role">{role_opts(u['role'])}</select> <button>Save role</button></form>
 <form class="inline" method="post" action="/team/{u['id']}"><input type="hidden" name="op" value="reset"><button>Reset password</button></form>
@@ -1016,7 +1105,7 @@ def team_page(db: Database, user: dict, issued: dict | None = None) -> tuple[str
             status.append('<span class="pill s-in_copy">Temporary password</span>')
         rows.append(f"""<tr><td><div style="display:flex;gap:10px;align-items:center"><div class="avatar">{initials(u['display_name'])}</div>
 <div><b>{e(u['display_name'])}</b><br><span class="meta">{e(u.get('job_title') or '')}</span></div></div></td>
-<td>{e(role_label(u['role']))}</td><td>{e(u['email'])}<br><span class="meta">Last sign-in: {when(u.get('last_login_at')) or 'never'}</span></td>
+<td>{e(role_label(u['role']))}<br><span class="meta">{e(categories.scope_label(dict(u, categories=u_cats)))}</span></td><td>{e(u['email'])}<br><span class="meta">Last sign-in: {when(u.get('last_login_at')) or 'never'}</span></td>
 <td>{' '.join(status)}</td><td>{controls}</td></tr>""")
     add = ""
     if is_admin:
@@ -1025,10 +1114,12 @@ def team_page(db: Database, user: dict, issued: dict | None = None) -> tuple[str
 <label>Email</label><input type="email" name="email" required></div>
 <div><label>Role</label><select name="role">{role_opts('copywriter')}</select>
 <label>Job title (shown in bylines for editors)</label><input type="text" name="job_title"></div></div>
+<label>Categories they work on (leave all unticked for every category; admins always see everything)</label><div>{cat_boxes([])}</div>
 <p><button class="primary">Create account</button> <span class="meta">They get a temporary password to change on first sign-in.</span></p></form></div>"""
     note = ("" if is_admin else '<p class="sub">Only admins can add people or change roles.</p>')
     body = (f'<h1 class="page">Team</h1><p class="sub">Copy editors edit assigned stories, editors approve, assign and unpublish, '
-            f'publishers put approved stories live, admins manage everything including the team.</p>{note}{secret}{add}'
+            f'publishers put approved stories live, admins manage everything including the team. People only see and act on '
+            f'stories in their categories.</p>{note}{secret}{add}'
             f'<table><tr><th>Person</th><th>Role</th><th>Email</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
     return "Team", body
 
@@ -1044,8 +1135,11 @@ def run_result(r: dict) -> str:
             f'{st.get("auto_published", 0)} auto-published')
 
 
-def sources_page(db: Database, user: dict, test_result: dict | None = None, form: dict | None = None) -> tuple[str, str]:
+def sources_page(db: Database, user: dict, test_result: dict | None = None, form: dict | None = None,
+                 q: dict | None = None) -> tuple[str, str]:
     can = src_mod.can_manage(user)
+    q = q or {}
+    cat = q.get("cat", [""])[0]
     st = pull_mod.status()
     running = st.get("running")
     # pull panel
@@ -1100,15 +1194,21 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
                      + '</div>')
     # sources table
     rows = []
-    for r in src_mod.list_sources(db):
+    srcs = src_mod.list_sources(db)
+    cat_counts: dict[str, int] = {}
+    for r in srcs:
+        cat_counts[r.get("category") or categories.default()] = cat_counts.get(r.get("category") or categories.default(), 0) + 1
+    if cat:
+        srcs = [r for r in srcs if (r.get("category") or categories.default()) == cat]
+    for r in srcs:
         toggle = ""
-        if can:
+        if can and categories.can_access(user, r.get("category")):
             toggle = (f'<form class="inline" method="post" action="/sources/{e(r["id"])}"><input type="hidden" name="active" value="{"0" if r["active"] else "1"}">'
                       f'<button class="{"danger" if r["active"] else ""}">{"Switch off" if r["active"] else "Switch on"}</button></form>')
         status = (r.get("last_status") or "not fetched yet")
         status_cls = "bad" if status.startswith("error") else ""
         rows.append(f"""<tr><td><b>{e(r['name'])}</b><br><a class="meta" href="{e(r['url'])}" target="_blank" rel="noopener">{e(r['url'][:70])}</a></td>
-<td>{e(r['country'])}</td><td>{e(r['kind'])}<br><span class="meta">{e(r['reuse'])}</span></td><td>{r['items']}</td>
+<td>{cat_pill(r.get('category'))}</td><td>{e(r['country'])}</td><td>{e(r['kind'])}<br><span class="meta">{e(r['reuse'])}</span></td><td>{r['items']}</td>
 <td><span class="{status_cls}">{e(status[:60])}</span><br><span class="meta">{when(r.get('last_fetched_at'))}</span></td>
 <td>{'<span class="pill s-approved">On</span>' if r['active'] else '<span class="pill s-killed">Off</span>'}<br><span class="meta">{e(r.get('added_by') or '')}</span></td><td>{toggle}</td></tr>""")
     add = ""
@@ -1124,9 +1224,12 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
                       f'{", newest " + e(test_result["newest"]) if test_result.get("newest") else ""}.</div><ul class="meta">{items}</ul>')
         opt = lambda name, choices, cur: "".join(f'<option value="{k}" {"selected" if k == cur else ""}>{e(v)}</option>' for k, v in choices.items())
         countries = {c: f"{c} · {n}" for c, n in COUNTRY_NAMES.items()}
+        cats = {c: n for c, n in categories.choices() if categories.can_access(user, c)}
+        first_cat = cat if cat in cats else next(iter(cats), categories.default())
         add = f"""<div class="panel"><h2>Add an RSS feed</h2>{tr}<form class="form" method="post" action="/sources">
 <div class="grid2"><div><label>Name</label><input type="text" name="name" value="{e(f.get('name', ''))}" placeholder="e.g. Bank of England news" required>
 <label>Feed address (RSS or Atom)</label><input type="text" name="url" value="{e(f.get('url', ''))}" placeholder="https://..." required>
+<label>Category: its stories are scored and written with this category's approach</label><select name="category">{opt('category', cats, f.get('category', first_cat))}</select>
 <label>Country it covers</label><select name="country">{opt('country', countries, f.get('country', 'US'))}</select></div>
 <div><label>Kind</label><select name="kind">{opt('kind', src_mod.KINDS, f.get('kind', 'publisher'))}</select>
 <label>How we may use its content</label><select name="reuse">{opt('reuse', src_mod.REUSE, f.get('reuse', 'link_only'))}</select>
@@ -1134,7 +1237,8 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
 <p class="row-actions"><button name="op" value="test">Test feed</button><button class="primary" name="op" value="add">Test and add</button></p></form></div>"""
     body = (f'<h1 class="page">Sources & pulls</h1><p class="sub">The RSS feeds the pipeline reads, the daily schedule, and a button to pull now.</p>'
             f'<div class="grid2"><div class="panel"><h2>Pull now</h2>{state}{buttons}</div>{schedule_html}</div>{add}'
-            f'<table><tr><th>Source</th><th>Country</th><th>Kind / use</th><th>Items</th><th>Last fetch</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
+            + (f'<div class="tabs">{_filter_chips(q, "/sources", "cat", [("", "All categories")] + categories.choices(), cat_counts)}</div>')
+            + f'<table><tr><th>Source</th><th>Category</th><th>Country</th><th>Kind / use</th><th>Items</th><th>Last fetch</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
     return "Sources & pulls", body
 
 
@@ -1255,19 +1359,19 @@ class Handler(BaseHTTPRequestHandler):
                 out = edit_page(db, int(m.group(1)), user, q.get("next", [""])[0])
                 return self._render(db, user, out, "queue", q, wide=bool(out and out[0].startswith("Edit · ")))
             if m := re.fullmatch(r"/story/(\d+)/history", path):
-                return self._render(db, user, history_page(db, int(m.group(1))), "queue", q)
+                return self._render(db, user, history_page(db, int(m.group(1)), user), "queue", q)
             if m := re.fullmatch(r"/story/(\d+)/diff/(\d+)", path):
-                return self._render(db, user, diff_page(db, int(m.group(1)), int(m.group(2))), "queue", q)
+                return self._render(db, user, diff_page(db, int(m.group(1)), int(m.group(2)), user), "queue", q)
             if path == "/scoring":
                 return self._render(db, user, scoring_page(db, q, user), "scoring", q)
             if path == "/scoring/items":
-                return self._render(db, user, items_page(db, q), "scoring", q)
+                return self._render(db, user, items_page(db, q, user), "scoring", q)
             if m := re.fullmatch(r"/scoring/(\d+)/pickup", path):
                 cid = int(m.group(1))
                 busy = pick_mod.active_request(db, cid) is not None
                 return self._render(db, user, pickup_page(db, user, cid), "scoring", q, refresh=5 if busy else None)
             if path == "/sources":
-                return self._render(db, user, sources_page(db, user), "sources", q,
+                return self._render(db, user, sources_page(db, user, q=q), "sources", q,
                                     refresh=10 if pull_mod.is_running() else None)
             if path == "/team":
                 return self._render(db, user, team_page(db, user), "team", q)
@@ -1385,10 +1489,20 @@ class Handler(BaseHTTPRequestHandler):
                     msg += " Readers still see the published version until this is approved and republished."
                 return self._redirect(f"/story/{sid}?{'err' if errs else 'ok'}={quote(msg)}")
 
+            if m := re.fullmatch(r"/story/(\d+)/category", path):
+                sid = int(m.group(1))
+                try:
+                    wf.set_category(db, sid, user, form.get("category", ""), note=form.get("note") or None)
+                except wf.WorkflowError as exc:
+                    db.rollback()
+                    return self._redirect(f"/story/{sid}?err={quote(str(exc))}")
+                return self._redirect(f"/story/{sid}?ok={quote('Moved to ' + categories.name(form.get('category')) + '.')}")
+
             if path == "/team":
                 try:
                     new, temp = auth.create_user(db, user, email=form.get("email", ""), display_name=form.get("display_name", ""),
-                                                 role=form.get("role", ""), job_title=form.get("job_title", ""))
+                                                 role=form.get("role", ""), job_title=form.get("job_title", ""),
+                                                 categories=[c for c in categories.ids() if form.get(f"cat_{c}") == "1"])
                 except auth.AuthError as exc:
                     db.rollback()
                     return self._redirect(f"/team?err={quote(str(exc))}")
@@ -1404,6 +1518,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(200, page("Team", "team", team_page(db, user, issued)[1], user))
                     if op == "role":
                         auth.update_user(db, user, uid, role=form.get("role"))
+                    elif op == "categories":
+                        auth.update_user(db, user, uid, categories=[c for c in categories.ids() if form.get(f"cat_{c}") == "1"])
                     elif op in ("deactivate", "activate"):
                         if uid == user["id"] and op == "deactivate":
                             raise auth.AuthError("You can't deactivate your own account.")
@@ -1433,14 +1549,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/sources":
                 if not src_mod.can_manage(user):
                     return self._redirect(f"/sources?err={quote('Only editors and admins can add sources.')}")
-                f = {k: form.get(k, "") for k in ("name", "url", "country", "kind", "reuse")}
+                f = {k: form.get(k, "") for k in ("name", "url", "country", "kind", "reuse", "category")}
                 f["full_text"] = form.get("full_text") == "1"
                 try:
                     if form.get("op") == "test":
                         result = src_mod.test_feed(f["url"])
                     else:
                         result = src_mod.add_source(db, user, name=f["name"], country=f["country"], url=f["url"],
-                                                    kind=f["kind"], reuse=f["reuse"], full_text=f["full_text"])
+                                                    kind=f["kind"], reuse=f["reuse"], full_text=f["full_text"],
+                                                    category=f["category"] or None)
                         result["added"] = True
                         f = {}
                 except src_mod.SourceError as exc:

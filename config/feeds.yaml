@@ -3,6 +3,8 @@
 # Editing a source here does not change one that already exists in the database.
 #
 #
+# category:      finance (default) | sports | entertainment | fitness  (see categories.yaml);
+#                the category decides how the desk scores the source's stories and how they are written
 # kind:          official  = central bank / regulator / tax / statistics agency
 #                publisher = commercial finance publisher
 # reuse:         public_domain | ogl (UK Open Government Licence) | crown_copyright_ca

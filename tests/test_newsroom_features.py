@@ -634,6 +634,140 @@ class BlockEditorTest(Base):
 
 
 # =========================================================================
+class CategoryTest(Base):
+    """Feeds decide the category; each category has its own desk, sections, checks and staff."""
+
+    SPORTS_XML = """<?xml version="1.0"?><rss version="2.0"><channel><title>Sports wire</title>
+<item><title>Rivers City win the championship final with a late goal</title><link>https://sports.example.com/final</link>
+<description>Rivers City beat Harbour United 3-2 in the championship final on Saturday, their 12th title.</description><pubDate>{d1}</pubDate></item>
+<item><title>Best bets and odds for Sunday's games</title><link>https://sports.example.com/odds</link>
+<description>Our picks.</description><pubDate>{d1}</pubDate></item>
+<item><title>Federal Reserve issues FOMC statement holding the federal funds rate target range</title>
+<link>https://sports.example.com/fed-and-sport</link><description>A sports outlet repeats the rate news.</description><pubDate>{d1}</pubDate></item>
+</channel></rss>"""
+
+    def _with_sports(self, name):
+        from fixtures import rfc822
+        from pipeline import cluster, desk, feeds, writer
+        from pipeline.db import utcnow
+        from pipeline.llm import MockClient
+        db = self.prepared(name)
+        path = self.tmp / f"{name}-sports.xml"
+        path.write_text(self.SPORTS_XML.format(d1=rfc822(2)), encoding="utf-8")
+        db.execute("""insert into pipeline.sources (id, name, country, category, url, kind, reuse, full_text, active, added_by, created_at)
+                      values (?,?,?,?,?,?,?,?,?,?,?)""",
+                   (f"us-sports-{name}", "Sports wire", "US", "sports", f"file://{path}", "publisher", "link_only", False, True, "test", utcnow()))
+        db.commit()
+        feeds.ingest(db); cluster.cluster(db); desk.evaluate(db, MockClient()); writer.write(db, MockClient(), fetch_text=False)
+        return db
+
+    def test_sports_story_uses_the_sports_desk(self):
+        from newsroom import workflow as wf
+        from newsroom.store import get_story
+        from pipeline import categories
+        from pipeline.db import Database
+        db = self._with_sports("cat_sports")
+        odds = db.fetchone("select status, filter_reason from pipeline.raw_items where url like '%/odds'")
+        self.assertEqual(odds["status"], "filtered")                      # sports title filter (betting)
+        final = db.fetchone("""select c.id, c.category from pipeline.raw_items r join pipeline.story_clusters c on c.id = r.cluster_id
+                               where r.url = 'https://sports.example.com/final'""")
+        self.assertEqual(final["category"], "sports")
+        ev = db.fetchone("select * from pipeline.evaluations where cluster_id = ? order by id desc limit 1", (final["id"],))
+        self.assertEqual(set(Database.unj(ev["scores"], {})), set(categories.dimension_keys("sports")))
+        self.assertIsNone(ev["wallet_impact"])                              # finance columns stay empty
+        self.assertEqual(ev["decision"], "run")
+        # the same headline from a sports feed starts its own sports story; it doesn't join the finance one
+        fed = db.fetchall("""select distinct c.category from pipeline.raw_items r join pipeline.story_clusters c on c.id = r.cluster_id
+                             where r.title like 'Federal Reserve issues FOMC%'""")
+        self.assertEqual(sorted(r["category"] for r in fed), ["finance", "sports"])
+        # finance evaluations keep their columns
+        fin = db.fetchone("""select e.* from pipeline.evaluations e join pipeline.story_clusters c on c.id = e.cluster_id
+                             where c.category = 'finance' and e.decision = 'run' limit 1""")
+        self.assertIsNotNone(fin["wallet_impact"])
+
+        st = db.fetchone("select id from newsroom.stories where cluster_id = ?", (final["id"],))
+        story = get_story(db, st["id"])
+        self.assertEqual(story["category"], "sports")
+        self.assertIn("## Why it matters", story["revision"]["body_md"])
+        self.assertIn("## What to watch next", story["revision"]["body_md"])
+        self.assertNotIn("What it means for your money", story["revision"]["body_md"])
+
+        maya, sara = self.user(db, "maya"), self.user(db, "sara")
+        wf.perform(db, story["id"], "approve", maya, override=True, note="test")
+        wf.perform(db, story["id"], "publish", sara)
+        row = db.fetchone("select category, disclosure from site.published_stories where story_id = ?", (story["id"],))
+        self.assertEqual(row["category"], "sports")
+        self.assertNotIn("financial", row["disclosure"])                     # finance disclaimer only on finance
+
+    def test_fitness_is_never_auto_published(self):
+        from newsroom import workflow as wf
+        from newsroom.store import create_ai_draft, get_story
+        from pipeline import categories
+        db = self.prepared("cat_fitness")
+        self.assertFalse(categories.autopublish("fitness")["enabled"])
+        self.assertTrue(categories.autopublish("sports")["enabled"])
+        content = {"headline": "Walking more helps", "dek": "d", "sections": {"what_happened": "x"}, "action_steps": [],
+                   "takeaways": [], "topics": [], "sources": []}
+        sid = create_ai_draft(db, cluster_id=None, country="US", slug="us-walking-fit", content=content,
+                              guardrails={"passed": True, "issues": [], "metrics": {}}, model="m", impact_score=95.0,
+                              angle="a", attempts=1, category="fitness")
+        db.commit()
+        out = wf.autopublish(db)
+        self.assertGreaterEqual(out["category_off"], 1)
+        s = get_story(db, sid)
+        self.assertEqual((s["status"], s["category"]), ("ai_draft", "fitness"))
+        self.assertIn("## What's new", s["revision"]["body_md"])          # fitness section title
+
+    def test_staff_only_work_in_their_categories(self):
+        from newsroom import auth, workflow as wf
+        from newsroom import sources as src_mod
+        from newsroom.store import get_story
+        db = self._with_sports("cat_staff")
+        admin = {"id": 0, "role": "admin", "display_name": "Admin"}
+        ed, _ = auth.create_user(db, admin, email="sports.ed@example.com", display_name="Sam Sports", role="editor",
+                                 categories=["sports"], password="Sports-editor-pass-1")
+        cw, _ = auth.create_user(db, admin, email="sports.copy@example.com", display_name="Cara Copy", role="copywriter",
+                                 categories=["sports"], password="Sports-copy-pass-1")
+        ed = db.fetchone("select * from newsroom.users where id = ?", (ed["id"],))
+        cw = db.fetchone("select * from newsroom.users where id = ?", (cw["id"],))
+        fin = get_story(db, db.fetchone("select id from newsroom.stories where category = 'finance' order by id limit 1")["id"])
+        spo = get_story(db, db.fetchone("select id from newsroom.stories where category = 'sports' order by id limit 1")["id"])
+        self.assertEqual(wf.allowed_actions(fin, ed), [])
+        self.assertFalse(wf.can_edit(fin, ed))
+        with self.assertRaisesRegex(wf.WorkflowError, "doesn't work on Finance"):
+            wf.perform(db, fin["id"], "approve", ed)
+        self.assertIn("approve", wf.allowed_actions(spo, ed))
+        self.assertTrue(wf.can_edit(spo, cw))
+        # queues only list their categories
+        cats = {r["category"] for r in wf.queue(db, ("ai_draft",), only_categories={"sports"})}
+        self.assertEqual(cats, {"sports"})
+        # a sports copy editor can't be given a finance story
+        maya = self.user(db, "maya")
+        with self.assertRaisesRegex(wf.WorkflowError, "doesn't work on Finance"):
+            wf.perform(db, fin["id"], "assign", maya, assignee_id=cw["id"])
+        wf.perform(db, spo["id"], "assign", ed, assignee_id=cw["id"])
+        # moving between categories needs access to both
+        with self.assertRaises(wf.WorkflowError):
+            wf.set_category(db, spo["id"], ed, "finance")
+        moved = wf.set_category(db, fin["id"], maya, "entertainment", note="celebrity money story")
+        self.assertEqual(moved["category"], "entertainment")
+        self.assertIn("recategorized", [r["action"] for r in db.fetchall(
+            "select action from newsroom.story_events where story_id = ?", (fin["id"],))])
+        # sources: a sports editor adds sports feeds only
+        ok = lambda url: {"items": 3, "latest": [], "newest": None}   # noqa: E731
+        src_mod.add_source(db, ed, name="Sports Two", country="US", url="https://sports2.example.com/rss",
+                           category="sports", tester=ok)
+        with self.assertRaises(src_mod.SourceError):
+            src_mod.add_source(db, ed, name="Money Two", country="US", url="https://money2.example.com/rss",
+                               category="finance", tester=ok)
+        self.assertEqual(db.fetchone("select category from pipeline.sources where name = 'Sports Two'")["category"], "sports")
+        # unassigned staff and admins see everything
+        from pipeline import categories
+        self.assertIsNone(categories.user_scope(maya))
+        self.assertIsNone(categories.user_scope({"role": "admin", "categories": ["sports"]}))
+
+
+# =========================================================================
 class HttpTest(Base):
     """Drive the real desk server over HTTP: login, sessions, roles, CSRF."""
 
@@ -793,6 +927,37 @@ class HttpTest(Base):
         self.assertTrue(r.url.endswith("/"))
         r = self.post(op2, "/login", {"email": "boss@example.com", "password": "x"}, headers={"CF-Connecting-IP": "not-an-ip"})
         self.assertIn("incorrect", r.read().decode())   # junk header falls back to the real peer address
+
+    def test_category_editor_pages(self):
+        from newsroom import auth
+        from pipeline import cluster, desk, feeds, writer
+        from pipeline.db import connect
+        from pipeline.llm import MockClient
+        db = connect("newsroom")
+        if not db.fetchone("select id from newsroom.stories limit 1"):
+            feeds.ingest(db); cluster.cluster(db); desk.evaluate(db, MockClient())
+            writer.write(db, MockClient(), fetch_text=False)
+        fin_id = db.fetchone("select id from newsroom.stories where category = 'finance' order by id limit 1")["id"]
+        if not db.fetchone("select id from newsroom.users where email = 'ent.ed@example.com'"):
+            auth.create_user(db, None, email="ent.ed@example.com", display_name="Ena Ent", role="editor",
+                             categories=["entertainment"], password="Ent-editor-pass-12")
+        db.close()
+        op, _ = self.client()
+        self.post(op, "/login", {"email": "ent.ed@example.com", "password": "Ent-editor-pass-12"})
+        page = op.open(self.base + f"/story/{fin_id}").read().decode()
+        self.assertIn("Not your category", page.split("<title>")[1])
+        self.assertNotIn(f'href="/story/{fin_id}"', op.open(self.base + "/?q=editor").read().decode())
+        self.assertIn("No stories match", op.open(self.base + "/scoring").read().decode())
+        # admin sees the category everywhere and can move the story
+        op2, _ = self.client()
+        self.post(op2, "/login", {"email": "boss@example.com", "password": "Boss-password-2026"})
+        page = op2.open(self.base + f"/story/{fin_id}").read().decode()
+        self.assertIn('<span class="pill cat">Finance</span>', page)
+        self.assertIn("Move to another category", page)
+        team = op2.open(self.base + "/team").read().decode()
+        self.assertIn('name="cat_sports"', team)
+        src = op2.open(self.base + "/sources").read().decode()
+        self.assertIn('<select name="category">', src)
 
 
 if __name__ == "__main__":

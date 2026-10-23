@@ -26,6 +26,7 @@ create table if not exists pipeline.sources (
     country         text not null check (country in ('US','UK','CA','AU')),
     url             text not null,
     kind            text not null check (kind in ('official','publisher')),
+    category        text not null default 'finance',   -- config/categories.yaml
     reuse           text not null default 'link_only',
     full_text       boolean not null default false,
     active          boolean not null default true,
@@ -40,6 +41,7 @@ create table if not exists pipeline.sources (
 create table if not exists pipeline.story_clusters (
     id           bigserial primary key,
     country      text not null,
+    category     text not null default 'finance',
     headline     text not null,
     lead_item_id bigint,
     item_count   integer not null default 1,
@@ -75,6 +77,7 @@ create table if not exists pipeline.evaluations (
     cluster_id    bigint not null references pipeline.story_clusters(id),
     model         text not null,
     wallet_impact smallint, breadth smallint, actionability smallint, urgency smallint, novelty smallint,
+    scores        jsonb,                      -- the category's dimension scores {key: 1-5}
     flags         jsonb not null default '[]',
     impact_score  numeric(5,1) not null,
     decision      text not null check (decision in ('run','hold','reject')),
@@ -118,6 +121,7 @@ create table if not exists newsroom.users (
     display_name   text not null,
     slug           text not null unique,
     role           text not null check (role in ('copywriter','editor','publisher','admin')),
+    categories     jsonb not null default '[]',      -- categories this person works in; [] = all
     job_title      text,
     bio            text,
     credentials    text,
@@ -143,6 +147,7 @@ create table if not exists newsroom.stories (
     id                bigserial primary key,
     cluster_id        bigint unique,             -- pipeline.story_clusters(id); null for human-originated stories
     country           text not null check (country in ('US','UK','CA','AU')),
+    category          text not null default 'finance',
     slug              text not null unique,
     status            text not null default 'ai_draft'
                       check (status in ('ai_draft','in_copy','in_review','approved','published','unpublished','killed')),
@@ -235,6 +240,7 @@ create table if not exists site.published_stories (
     story_id           bigint not null unique,      -- newsroom.stories(id)
     slug               text not null unique,
     country            text not null,
+    category           text not null default 'finance',
     headline           text not null,
     dek                text,
     sections           jsonb not null,             -- what_happened, money_impact, who_is_affected, illustrative_example
@@ -272,3 +278,12 @@ alter table newsroom.stories add column if not exists research jsonb;
 alter table site.published_stories add column if not exists human_reviewed boolean not null default true;
 alter table newsroom.story_revisions add column if not exists blocks jsonb;
 alter table site.published_stories add column if not exists blocks jsonb;
+alter table pipeline.sources add column if not exists category text not null default 'finance';
+alter table pipeline.story_clusters add column if not exists category text not null default 'finance';
+alter table pipeline.evaluations add column if not exists scores jsonb;
+alter table newsroom.users add column if not exists categories jsonb not null default '[]';
+alter table newsroom.stories add column if not exists category text not null default 'finance';
+alter table site.published_stories add column if not exists category text not null default 'finance';
+create index if not exists stories_category on newsroom.stories (category, status);
+create index if not exists clusters_category on pipeline.story_clusters (category, status);
+create index if not exists site_category on site.published_stories (category, status);

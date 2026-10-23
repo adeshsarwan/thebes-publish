@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 
-from pipeline import guardrails
+from pipeline import categories, guardrails
 from pipeline.cluster import cluster_items
 from pipeline.db import Database, utcnow
 from pipeline.settings import get_settings
@@ -74,7 +74,7 @@ def _status_ok(story: dict, action: str) -> bool:
 
 
 def allowed_actions(story: dict, user: dict | None) -> list[str]:
-    if not user:
+    if not user or not categories.can_access(user, story.get("category")):
         return []
     out = []
     for name, spec in ACTIONS.items():
@@ -91,7 +91,7 @@ def can_edit(story: dict, user: dict | None) -> bool:
 
     A copy editor can't take over a story another copy editor is working on.
     """
-    if not user or user["role"] not in EDIT_ROLES:
+    if not user or user["role"] not in EDIT_ROLES or not categories.can_access(user, story.get("category")):
         return False
     status = story["status"]
     if status not in EDITABLE | CORRECTABLE:
@@ -131,9 +131,10 @@ def check_content(db: Database, story: dict, content: dict) -> dict:
     if research.get("text"):
         source_text += "\n\n" + research["text"]
     if content.get("blocks"):
-        rep = guardrails.check(blk.guardrail_view(content), source_text, story["country"], freeform=True)
+        rep = guardrails.check(blk.guardrail_view(content), source_text, story["country"], freeform=True,
+                               category=story.get("category"))
     else:
-        rep = guardrails.check(guardrail_view(content), source_text, story["country"])
+        rep = guardrails.check(guardrail_view(content), source_text, story["country"], category=story.get("category"))
     if not source_text:  # human-originated story: no source to compare figures against
         rep.issues = [i for i in rep.issues if i["code"] != "unsupported_numbers"]
     return rep.as_dict()
@@ -176,6 +177,8 @@ def perform(db: Database, story_id: int, action: str, user: dict, *, note: str |
     story = get_story(db, story_id)
     _require(story is not None, f"story {story_id} not found")
     _require(action in ACTIONS, f"unknown action {action!r}")
+    _require(categories.can_access(user, story.get("category")),
+             f"{user['display_name']} doesn't work on {categories.name(story.get('category'))} stories")
     spec = ACTIONS[action]
     _require(user["role"] in spec["roles"], f"a {user['role']} can't {action.replace('_', ' ')} stories")
     if action == "kill" and story.get("live"):
@@ -192,6 +195,8 @@ def perform(db: Database, story_id: int, action: str, user: dict, *, note: str |
         _require(assignee_id is not None, "choose a copywriter to assign")
         assignee = db.fetchone("select * from newsroom.users where id = ? and active = ?", (assignee_id, True))
         _require(assignee is not None and assignee["role"] == "copywriter", "the assignee must be an active copywriter")
+        _require(categories.can_access(assignee, story.get("category")),
+                 f"{assignee['display_name']} doesn't work on {categories.name(story.get('category'))} stories")
         sets.update(assigned_to=assignee_id, editor_id=None)
         note = f"Assigned to {assignee['display_name']}" + (f": {note}" if note else "")
 
@@ -229,17 +234,42 @@ def perform(db: Database, story_id: int, action: str, user: dict, *, note: str |
     return get_story(db, story_id)  # type: ignore[return-value]
 
 
+def set_category(db: Database, story_id: int, user: dict, category: str, note: str | None = None) -> dict:
+    """Move a story to another category (editors and admins with access to both)."""
+    story = get_story(db, story_id)
+    _require(story is not None, f"story {story_id} not found")
+    _require(user["role"] in ("editor", "admin"), "only editors and admins can change a story's category")
+    _require(categories.valid(category), f"unknown category {category!r}")
+    old = story.get("category") or categories.default()
+    _require(categories.can_access(user, old) and categories.can_access(user, category),
+             "you can only move stories between categories you work on")
+    if category == old:
+        return story
+    _require(story["status"] not in ("killed",), "a killed story can't be moved")
+    db.execute("update newsroom.stories set category = ?, updated_at = ? where id = ?", (category, utcnow(), story_id))
+    log_event(db, story_id, "recategorized", actor_id=user["id"],
+              note=f"{categories.name(old)} → {categories.name(category)}" + (f": {note}" if note else ""))
+    db.commit()
+    return get_story(db, story_id)  # type: ignore[return-value]
+
+
 # --------------------------------------------------------------------------- publishing
-def disclosure_for(author: dict, ai_assisted: bool, human_reviewed: bool = True) -> str:
-    base = ("This article is for general information only and is not financial, tax or legal advice. "
-            "Consider your own circumstances and speak to a qualified, regulated adviser before making decisions.")
+def publication_name() -> str:
+    return ((get_settings().editorial.get("publication") or {}).get("name") or "Finance Hub").strip()
+
+
+def disclosure_for(author: dict, ai_assisted: bool, human_reviewed: bool = True, category: str | None = None) -> str:
+    """The note under a story: how it was made, plus the category's disclaimer (finance: not advice)."""
+    base = categories.disclosure(category)
     who = author["display_name"] + (f", {author['job_title']}" if author.get("job_title") else "")
     if ai_assisted and not human_reviewed:
-        return (f"This story was produced with AI from the sources listed and published automatically by the "
-                f"Finance Hub newsroom. {who} is the editor responsible for it. {base}")
-    if ai_assisted:
-        return f"This story was drafted with AI assistance from the sources listed and was reviewed and edited by {who}. {base}"
-    return base
+        text = (f"This story was produced with AI from the sources listed and published automatically by the "
+                f"{publication_name()} newsroom. {who} is the editor responsible for it.")
+    elif ai_assisted:
+        text = f"This story was drafted with AI assistance from the sources listed and was reviewed and edited by {who}."
+    else:
+        text = ""
+    return " ".join(t for t in (text, base) if t)
 
 
 def publish_to_site(db: Database, story: dict, correction_note: str | None = None,
@@ -264,11 +294,12 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
     ai_assisted = story.get("cluster_id") is not None
     db.execute(
         """insert into site.published_stories
-           (story_id, slug, country, headline, dek, sections, takeaways, action_steps, topics, sources,
+           (story_id, slug, country, category, headline, dek, sections, takeaways, action_steps, topics, sources,
             meta_description, body_md, blocks, author_id, ai_assisted, human_reviewed, disclosure, version, status,
             correction_note, first_published_at, updated_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
            on conflict (story_id) do update set slug = excluded.slug, country = excluded.country,
+             category = excluded.category,
              headline = excluded.headline, dek = excluded.dek, sections = excluded.sections,
              takeaways = excluded.takeaways, action_steps = excluded.action_steps, topics = excluded.topics,
              sources = excluded.sources, meta_description = excluded.meta_description, body_md = excluded.body_md,
@@ -277,10 +308,10 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
              human_reviewed = excluded.human_reviewed, disclosure = excluded.disclosure,
              version = excluded.version, status = 'live', correction_note = excluded.correction_note,
              updated_at = excluded.updated_at""",
-        (story["id"], story["slug"], story["country"], content["headline"], content.get("dek"),
+        (story["id"], story["slug"], story["country"], story.get("category") or categories.default(), content["headline"], content.get("dek"),
          db.j(content["sections"]), db.j(content["takeaways"]), db.j(content["action_steps"]),
          db.j(content["topics"]), db.j(content["sources"]), content.get("meta_description"), rev["body_md"],
-         db.j(content["blocks"]) if content.get("blocks") else None, author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed),
+         db.j(content["blocks"]) if content.get("blocks") else None, author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed, story.get("category")),
          story["current_version"], correction_note, now, now),
     )
 
@@ -295,22 +326,37 @@ def autopublish(db: Database, countries: list[str] | None = None) -> dict:
     that it was published automatically without an editor's review.
     """
     cfg = get_settings().editorial.get("autopublish") or {}
-    stats: dict = {"published": 0, "below_score": 0, "guardrail_errors": 0, "stories": []}
+    stats: dict = {"published": 0, "below_score": 0, "guardrail_errors": 0, "category_off": 0, "stories": []}
     if not cfg.get("enabled"):
         stats["disabled"] = True
         return stats
-    threshold = float(cfg.get("score_above", 60))
+
+    def find_editor(who: str):
+        who = (who or "").strip()
+        return who, db.fetchone(
+            "select * from newsroom.users where (slug = ? or lower(email) = ?) and active = ? and role in ('editor', 'admin')",
+            (who, who.lower(), True))
+
     # AUTOPUBLISH_RESPONSIBLE_EDITOR (a user's slug or email) overrides the config file per server
-    who = (os.getenv("AUTOPUBLISH_RESPONSIBLE_EDITOR") or cfg.get("responsible_editor", "")).strip()
-    editor = db.fetchone(
-        "select * from newsroom.users where (slug = ? or lower(email) = ?) and active = ? and role in ('editor', 'admin')",
-        (who, who.lower(), True))
+    who, editor = find_editor(os.getenv("AUTOPUBLISH_RESPONSIBLE_EDITOR") or cfg.get("responsible_editor", ""))
     if not editor:
         stats["error"] = f"responsible editor {who!r} not found or not an active editor or admin"
         return stats
     if editor["is_placeholder"] and get_settings().app_env == "production":
         stats["error"] = f"{editor['display_name']} is a placeholder profile; set a real responsible_editor"
         return stats
+    default_editor = editor
+
+    def editor_for(cat: str):
+        """A category can name its own responsible editor (AUTOPUBLISH_RESPONSIBLE_EDITOR_SPORTS or
+        categories.yaml autopublish.responsible_editor); otherwise the shared one."""
+        own = os.getenv(f"AUTOPUBLISH_RESPONSIBLE_EDITOR_{cat.upper()}") or (categories.get(cat).get("autopublish") or {}).get("responsible_editor")
+        if not own:
+            return default_editor
+        _, ed = find_editor(own)
+        if not ed or (ed["is_placeholder"] and get_settings().app_env == "production"):
+            return None
+        return ed
 
     marks = ""
     params: list = ["ai_draft", False]
@@ -323,13 +369,23 @@ def autopublish(db: Database, countries: list[str] | None = None) -> dict:
         + " order by id", params)
     for r in rows:
         story = get_story(db, r["id"])
+        cat = story.get("category") or categories.default()
+        ccfg = categories.autopublish(cat)
+        if not ccfg.get("enabled"):
+            stats["category_off"] += 1      # e.g. fitness & health: always reviewed by a person
+            continue
+        threshold = float(ccfg.get("score_above", 60))
         score = story.get("impact_score")
         if score is None or score <= threshold:
             stats["below_score"] += 1
             continue
         g = (story["revision"] or {}).get("guardrails") or {}
-        if cfg.get("require_guardrails_pass", True) and not g.get("passed"):
+        if ccfg.get("require_guardrails_pass", True) and not g.get("passed"):
             stats["guardrail_errors"] += 1
+            continue
+        editor = editor_for(cat)
+        if not editor:
+            stats["error"] = f"no usable responsible editor for {categories.name(cat)}"
             continue
         story["editor_id"] = editor["id"]
         publish_to_site(db, story, human_reviewed=False)
@@ -357,7 +413,8 @@ QUEUES = [
 DEFAULT_QUEUE = {"editor": "editor", "admin": "editor", "copywriter": "copy", "publisher": "publish"}
 
 
-def queue(db: Database, statuses: tuple[str, ...], assigned_to: int | None = None) -> list[dict]:
+def queue(db: Database, statuses: tuple[str, ...], assigned_to: int | None = None,
+          only_categories: set[str] | list[str] | None = None) -> list[dict]:
     marks = ",".join("?" for _ in statuses)
     sql = f"""select s.*, r.headline, r.dek, r.guardrails, r.author_kind, r.word_count,
                      a.display_name as assignee_name, ed.display_name as editor_name
@@ -370,6 +427,10 @@ def queue(db: Database, statuses: tuple[str, ...], assigned_to: int | None = Non
     if assigned_to:
         sql += " and s.assigned_to = ?"
         params.append(assigned_to)
+    if only_categories is not None:
+        cats = list(only_categories) or ["-none-"]
+        sql += f" and s.category in ({','.join('?' for _ in cats)})"
+        params += cats
     sql += " order by coalesce(s.impact_score, 0) desc, s.updated_at desc"
     rows = db.fetchall(sql, params)
     for r in rows:
@@ -377,8 +438,12 @@ def queue(db: Database, statuses: tuple[str, ...], assigned_to: int | None = Non
     return rows
 
 
-def queue_counts(db: Database) -> dict[str, int]:
+def queue_counts(db: Database, only_categories: set[str] | list[str] | None = None) -> dict[str, int]:
     counts = {s: 0 for s in LABELS}
-    for r in db.fetchall("select status, count(*) as n from newsroom.stories group by status"):
+    where, params = "", []
+    if only_categories is not None:
+        cats = list(only_categories) or ["-none-"]
+        where, params = f" where category in ({','.join('?' for _ in cats)})", cats
+    for r in db.fetchall("select status, count(*) as n from newsroom.stories" + where + " group by status", params):
         counts[r["status"]] = r["n"]
     return counts

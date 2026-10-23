@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from pipeline import categories
 from pipeline.db import Database, utcnow
 from pipeline.feeds import parse_feed
 from pipeline.settings import COUNTRY_NAMES, get_settings
@@ -90,9 +91,15 @@ def test_feed(url: str) -> dict:
 
 
 def add_source(db: Database, user: dict, *, name: str, country: str, url: str, kind: str = "publisher",
-               reuse: str = "link_only", full_text: bool = False, tester=test_feed) -> dict:
+               reuse: str = "link_only", full_text: bool = False, tester=test_feed,
+               category: str | None = None) -> dict:
     if not can_manage(user):
         raise SourceError("Only editors and admins can add sources.")
+    category = category or categories.default()
+    if not categories.valid(category):
+        raise SourceError("Choose the category this source's stories belong to.")
+    if not categories.can_access(user, category):
+        raise SourceError(f"You can only add sources for categories you work on ({categories.scope_label(user)}).")
     name = (name or "").strip()
     if not name:
         raise SourceError("Give the source a name.")
@@ -114,9 +121,9 @@ def add_source(db: Database, user: dict, *, name: str, country: str, url: str, k
     while db.fetchone("select id from pipeline.sources where id = ?", (sid,)):
         sid, n = f"{base}-{n}", n + 1
     db.execute(
-        """insert into pipeline.sources (id, name, country, url, kind, reuse, full_text, active, added_by, created_at)
-           values (?,?,?,?,?,?,?,?,?,?)""",
-        (sid, name, country, url.strip(), kind, reuse, bool(full_text), True, user["email"], utcnow()))
+        """insert into pipeline.sources (id, name, country, category, url, kind, reuse, full_text, active, added_by, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?)""",
+        (sid, name, country, category, url.strip(), kind, reuse, bool(full_text), True, user["email"], utcnow()))
     db.commit()
     return {"id": sid, **report}
 
@@ -124,8 +131,11 @@ def add_source(db: Database, user: dict, *, name: str, country: str, url: str, k
 def set_active(db: Database, user: dict, source_id: str, active: bool) -> None:
     if not can_manage(user):
         raise SourceError("Only editors and admins can change sources.")
-    if not db.fetchone("select id from pipeline.sources where id = ?", (source_id,)):
+    src = db.fetchone("select id, category from pipeline.sources where id = ?", (source_id,))
+    if not src:
         raise SourceError("No such source.")
+    if not categories.can_access(user, src.get("category")):
+        raise SourceError(f"You don't work on {categories.name(src.get('category'))} sources.")
     db.execute("update pipeline.sources set active = ? where id = ?", (bool(active), source_id))
     db.commit()
 
@@ -134,5 +144,5 @@ def list_sources(db: Database) -> list[dict]:
     rows = db.fetchall(
         """select s.*, (select count(*) from pipeline.raw_items r where r.source_id = s.id) as items,
                   (select max(r.published_at) from pipeline.raw_items r where r.source_id = s.id) as newest
-           from pipeline.sources s order by s.active desc, s.country, s.name""")
+           from pipeline.sources s order by s.active desc, s.category, s.country, s.name""")
     return rows

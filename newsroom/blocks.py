@@ -224,25 +224,29 @@ def _item_text(item) -> str:
 
 
 # --------------------------------------------------------------------------- conversion
-def content_to_blocks(content: dict) -> list[dict]:
-    """An AI draft's fixed sections as editable blocks (first manual edit)."""
+def content_to_blocks(content: dict, titles: dict | None = None) -> list[dict]:
+    """An AI draft's fixed sections as editable blocks (first manual edit).
+
+    `titles` are the category's section titles; finance's are the default."""
+    t = dict({k: v for k, v in SECTION_ORDER}, action_steps="What to do now", takeaways="Key takeaways")
+    t.update(titles or {})
     blocks: list[dict] = []
     sections = content.get("sections") or {}
-    for key, title in SECTION_ORDER:
+    for key, _ in SECTION_ORDER:
         text = (sections.get(key) or "").strip()
         if not text:
             continue
-        blocks.append({"type": "header", "data": {"text": html.escape(title, quote=False), "level": 2}})
+        blocks.append({"type": "header", "data": {"text": html.escape(t[key], quote=False), "level": 2}})
         for para in re.split(r"\n\s*\n", text):
             para = " ".join(line.strip() for line in para.splitlines() if line.strip())
             if para:
                 blocks.append({"type": "paragraph", "data": {"text": md_inline_to_html(para)}})
     if content.get("action_steps"):
-        blocks.append({"type": "header", "data": {"text": "What to do now", "level": 2}})
+        blocks.append({"type": "header", "data": {"text": html.escape(t["action_steps"], quote=False), "level": 2}})
         blocks.append({"type": "list", "data": {"style": "ordered",
                                                 "items": [md_inline_to_html(s) for s in content["action_steps"]]}})
     if content.get("takeaways"):
-        blocks.append({"type": "header", "data": {"text": "Key takeaways", "level": 2}})
+        blocks.append({"type": "header", "data": {"text": html.escape(t["takeaways"], quote=False), "level": 2}})
         blocks.append({"type": "list", "data": {"style": "unordered",
                                                 "items": [md_inline_to_html(s) for s in content["takeaways"]]}})
     return blocks

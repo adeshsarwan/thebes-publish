@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-from . import guardrails
+from . import categories, guardrails
 from .cluster import cluster_items
 from .db import Database, country_filter, utcnow
 from .desk import commission
@@ -28,23 +28,32 @@ log = logging.getLogger(__name__)
 
 FULL_TEXT_CHARS = 6000
 
-WRITE_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "headline": {"type": "STRING", "description": "Reader-impact headline, max 90 characters."},
-        "dek": {"type": "STRING", "description": "One-sentence standfirst: who is affected and how much it matters."},
-        "what_happened": {"type": "STRING", "description": "2-3 sentences of attributed facts, in our own words."},
-        "money_impact": {"type": "STRING", "description": "The core analysis, 3-5 paragraphs separated by blank lines."},
-        "who_is_affected": {"type": "STRING", "description": "Groups affected and not affected, 1-2 paragraphs."},
-        "illustrative_example": {"type": "STRING", "description": "Starts with 'Illustrative example:'; round hypothetical figures with the arithmetic shown."},
-        "action_steps": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "3-5 general, concrete steps."},
-        "takeaways": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Exactly 3 short bullets."},
-        "meta_description": {"type": "STRING", "description": "SEO description, max 155 characters."},
-        "topics": {"type": "ARRAY", "items": {"type": "STRING"}},
-    },
-    "required": ["headline", "dek", "what_happened", "money_impact", "who_is_affected",
-                 "illustrative_example", "action_steps", "takeaways", "meta_description", "topics"],
-}
+def write_schema(category: str | None = None) -> dict:
+    """The structured story the model returns. Keys are the same for every category;
+    what goes in each section comes from the category (config/categories.yaml)."""
+    sec = categories.sections(category)
+    lens = categories.get(category).get("lens") or "the reader"
+    guide = lambda k, fallback: (sec.get(k) or {}).get("guide") or fallback  # noqa: E731
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "headline": {"type": "STRING", "description": f"Headline that leads with {lens}, max 90 characters."},
+            "dek": {"type": "STRING", "description": "One-sentence standfirst: who is affected and why it matters."},
+            "what_happened": {"type": "STRING", "description": guide("what_happened", "2-3 sentences of attributed facts, in our own words.")},
+            "money_impact": {"type": "STRING", "description": guide("money_impact", "The core analysis, 3-5 paragraphs separated by blank lines.")},
+            "who_is_affected": {"type": "STRING", "description": guide("who_is_affected", "Groups affected and not affected, 1-2 paragraphs.")},
+            "illustrative_example": {"type": "STRING", "description": guide("illustrative_example", "Starts with 'Illustrative example:'; round hypothetical figures with the arithmetic shown.")},
+            "action_steps": {"type": "ARRAY", "items": {"type": "STRING"}, "description": guide("action_steps", "3-5 general, concrete steps.")},
+            "takeaways": {"type": "ARRAY", "items": {"type": "STRING"}, "description": guide("takeaways", "Exactly 3 short bullets.")},
+            "meta_description": {"type": "STRING", "description": "SEO description, max 155 characters."},
+            "topics": {"type": "ARRAY", "items": {"type": "STRING"}},
+        },
+        "required": ["headline", "dek", "what_happened", "money_impact", "who_is_affected",
+                     "illustrative_example", "action_steps", "takeaways", "meta_description", "topics"],
+    }
+
+
+WRITE_SCHEMA = write_schema("finance")   # kept for callers that predate categories
 
 # --------------------------------------------------------------------------- source material
 def _allowed_by_robots(url: str, user_agent: str, timeout: float) -> bool:
@@ -101,10 +110,10 @@ def build_source_material(items: list[dict], fetch_text: bool = True) -> tuple[s
 
 
 # --------------------------------------------------------------------------- prompting
-def _system(country: str) -> str:
+def _system(country: str, category: str | None = None) -> str:
     loc = locale_for(country)
     glossary = "; ".join(f"{k.replace('_', ' ')} = {v}" for k, v in glossary_for(country).items())
-    style = get_settings().editorial["style_guide"]
+    style = (categories.get(category).get("writer") or {}).get("style_guide") or ""
     return style.format(
         country_name=loc["country_name"],
         spelling=loc.get("spelling", "English"),
@@ -115,12 +124,17 @@ def _system(country: str) -> str:
 
 def _prompt(commission_row: dict, source_material: str, feedback: str | None) -> str:
     audience = ", ".join(commission_row.get("audience") or []) or "general readers"
+    cat = commission_row.get("category")
+    brief = (categories.get(cat).get("writer") or {}).get("brief") or "build the story around the reader"
+    if categories.numbers_are_illustrative(cat):
+        figures = ("Every figure in the headline, dek, what_happened, money_impact and who_is_affected must "
+                   "appear in the source material. Any other figures belong only in the illustrative example.\n")
+    else:
+        figures = "Every figure anywhere in the story must appear in the source material.\n"
     parts = [
-        f"ASSIGNMENT\nAngle: {commission_row.get('angle')}\nAudience: {audience}\n",
+        f"ASSIGNMENT\nCategory: {categories.name(cat)}\nAngle: {commission_row.get('angle')}\nAudience: {audience}\n",
         "Write an original story on this angle. Use the source material only as a source of facts. "
-        "Do not follow its structure or wording; build the story around the reader's money. "
-        "Every figure in the headline, dek, what_happened, money_impact and who_is_affected must "
-        "appear in the source material. Any other figures belong only in the illustrative example.\n",
+        f"Do not follow its structure or wording; {brief}. " + figures,
         f"SOURCE MATERIAL\n{source_material}\nEND SOURCE MATERIAL",
     ]
     if commission_row.get("notes"):
@@ -139,16 +153,17 @@ def _slug(country: str, headline: str, cluster_id: int) -> str:
 # --------------------------------------------------------------------------- stage
 def draft_story(client: LLMClient, model: str, row: dict, source_material: str) -> tuple[dict, guardrails.Report, int]:
     """Write a story from source material, re-drafting once with feedback if guardrails fail."""
-    cfg = get_settings().editorial["guardrails"]
-    system = _system(row["country"])
+    cat = row.get("category")
+    cfg = categories.guardrails(cat)
+    system = _system(row["country"], cat)
     story, report, feedback = None, None, None
     attempts = 0
     for attempts in range(1, int(cfg.get("max_regenerations", 1)) + 2):
         story = client.generate_json(
             model=model, system=system, prompt=_prompt(row, source_material, feedback),
-            schema=WRITE_SCHEMA, temperature=0.6, task="write",
+            schema=write_schema(cat), temperature=0.6, task="write",
         )
-        report = guardrails.check(story, source_material, row["country"])
+        report = guardrails.check(story, source_material, row["country"], category=cat)
         if report.passed:
             break
         feedback = report.feedback()
@@ -183,7 +198,7 @@ def write_one(db: Database, client: LLMClient, row: dict, fetch_text: bool = Tru
         db, cluster_id=row["cluster_id"], country=row["country"],
         slug=_slug(row["country"], story["headline"], row["cluster_id"]), content=content,
         guardrails=report.as_dict(), model=model, impact_score=row.get("impact_score"),
-        angle=row.get("angle"), attempts=attempts,
+        angle=row.get("angle"), attempts=attempts, category=row.get("category"),
     )
     db.execute("update pipeline.story_clusters set status = 'drafted', updated_at = ? where id = ?", (utcnow(), row["cluster_id"]))
     db.commit()
@@ -198,7 +213,7 @@ def write(db: Database, client: LLMClient, fetch_text: bool = True, limit: int |
     commission(db, countries)
     cf, cp = country_filter(countries, "c.country")
     rows = db.fetchall(
-        """select c.id as cluster_id, c.country, e.angle, e.audience, e.impact_score
+        """select c.id as cluster_id, c.country, c.category, e.angle, e.audience, e.impact_score
            from pipeline.story_clusters c
            join pipeline.evaluations e on e.id = (select max(id) from pipeline.evaluations where cluster_id = c.id)
            where c.status = 'commissioned'""" + cf + " order by e.impact_score desc"

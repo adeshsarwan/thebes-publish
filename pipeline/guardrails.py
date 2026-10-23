@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .settings import get_settings
+from . import categories
 from .taxonomy import find_terms, foreign_terms
 from .text import words
 
@@ -98,7 +98,8 @@ def unsupported_numbers(text: str, source_text: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- main
-def check(story: dict, source_text: str, country: str, freeform: bool = False) -> Report:
+def check(story: dict, source_text: str, country: str, freeform: bool = False,
+          category: str | None = None) -> Report:
     """Run the guardrails.
 
     AI drafts use the fixed sections. `freeform=True` is for stories a person
@@ -106,7 +107,7 @@ def check(story: dict, source_text: str, country: str, freeform: bool = False) -
     (text whose figures must be sourced) instead of fixed sections, so the
     section-structure checks don't apply; every other check is the same.
     """
-    cfg = get_settings().editorial["guardrails"]
+    cfg = categories.guardrails(category)   # shared rules + the category's own (finance by default)
     rep = Report()
 
     # Structure
@@ -163,19 +164,20 @@ def check(story: dict, source_text: str, country: str, freeform: bool = False) -
 
     # Facts: figures in factual sections must come from the sources
     if cfg.get("require_numbers_in_sources", True):
-        facts = story.get("facts", "") if freeform else " ".join(str(story.get(f, "")) for f in FACT_FIELDS)
+        fields = FACT_FIELDS if cfg.get("illustrative_numbers", True) else (*FACT_FIELDS, "illustrative_example")
+        facts = story.get("facts", "") if freeform else " ".join(str(story.get(f, "")) for f in fields)
         bad = unsupported_numbers(facts, source_text)
         rep.metrics["unsupported_numbers"] = bad
         if bad:
             rep.add("unsupported_numbers", "error",
                     f"Figures not found in the source material: {', '.join(bad)}. Remove them or move them into the clearly labelled illustrative example.")
 
-    ex = "" if freeform else story.get("illustrative_example", "")
+    ex = "" if freeform or not cfg.get("illustrative_numbers", True) else story.get("illustrative_example", "")
     if ex and "illustrative" not in ex.lower():
         rep.add("example_label", "warning", "Worked example is not labelled 'Illustrative example'.")
 
-    # Locale
-    stray = find_terms(full, foreign_terms(country))
+    # Locale: other markets' terms (finance: 401(k) in a UK story and so on)
+    stray = find_terms(full, foreign_terms(country)) if cfg.get("locale_terms") else []
     if stray:
         rep.add("foreign_terms", "warning", f"Uses other markets' terms in a {country} story: {', '.join(stray)}.")
 

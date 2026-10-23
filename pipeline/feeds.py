@@ -20,6 +20,7 @@ import requests
 
 from .db import Database, utcnow
 from .settings import get_settings
+from . import categories
 from .taxonomy import tag_topics
 from .text import canonical_url, fingerprint, strip_html, title_key
 
@@ -199,17 +200,18 @@ def sync_sources(db: Database) -> list[dict]:
         if db.fetchone("select id from pipeline.sources where id = ?", (src["id"],)):
             continue
         db.execute(
-            """insert into pipeline.sources (id, name, country, url, kind, reuse, full_text, active, added_by, created_at)
-               values (?,?,?,?,?,?,?,?,?,?)""",
-            (src["id"], src["name"], src["country"], src["url"], src["kind"], src.get("reuse", "link_only"),
+            """insert into pipeline.sources (id, name, country, category, url, kind, reuse, full_text, active, added_by, created_at)
+               values (?,?,?,?,?,?,?,?,?,?,?)""",
+            (src["id"], src["name"], src["country"], categories.check(src.get("category") or categories.default()),
+             src["url"], src["kind"], src.get("reuse", "link_only"),
              bool(src.get("full_text", False)), bool(src.get("active", True)), "config", utcnow()),
         )
     db.commit()
     return db.fetchall("select * from pipeline.sources where active = ? order by country, id", (True,))
 
 
-def _prefilter(title: str) -> str | None:
-    for pat in get_settings().editorial["desk"].get("prefilter_reject_patterns", []):
+def _prefilter(title: str, category: str | None = None) -> str | None:
+    for pat in categories.desk(category).get("prefilter_reject_patterns", []):
         if re.search(pat, title):
             return f"prefilter:{pat}"
     return None
@@ -251,7 +253,9 @@ def ingest(db: Database, only_country: str | None = None, only_source: str | Non
                 if e.published and e.published < cutoff:
                     stats["too_old"] += 1
                     continue
-                reason = _prefilter(e.title)
+                reason = _prefilter(e.title, src.get("category"))
+                topics = (tag_topics(src["country"], e.title, e.summary)
+                          if categories.desk(src.get("category")).get("tag_topics") else [])
                 fp = fingerprint(canonical_url(e.url))
                 new_id = db.insert(
                     """insert into pipeline.raw_items
@@ -263,7 +267,7 @@ def ingest(db: Database, only_country: str | None = None, only_source: str | Non
                     (
                         src["id"], src["country"], e.guid, e.url, e.title, e.summary, e.author,
                         e.published.isoformat() if e.published else None, utcnow(),
-                        fp, title_key(e.title), db.j(tag_topics(src["country"], e.title, e.summary)),
+                        fp, title_key(e.title), db.j(topics),
                         "filtered" if reason else "new", reason,
                     ),
                 )

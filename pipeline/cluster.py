@@ -35,7 +35,7 @@ def cluster(db: Database, countries: list[str] | None = None) -> dict:
 
     cf, cp = country_filter(countries, "r.country")
     items = db.fetchall(
-        """select r.id, r.country, r.title, r.title_key, s.kind
+        """select r.id, r.country, r.title, r.title_key, s.kind, s.category
            from pipeline.raw_items r join pipeline.sources s on s.id = r.source_id
            where r.status = 'new' and (r.published_at is null or r.published_at >= ?)""" + cf + """
            order by case when s.kind = 'official' then 0 else 1 end, r.published_at""",
@@ -44,20 +44,21 @@ def cluster(db: Database, countries: list[str] | None = None) -> dict:
     # Existing recent clusters, with every member's title_key for matching.
     clusters: dict[int, dict] = {}
     for row in db.fetchall(
-        """select c.id, c.country, c.status, r.title_key
+        """select c.id, c.country, c.category, c.status, r.title_key
            from pipeline.story_clusters c join pipeline.raw_items r on r.cluster_id = c.id
            where c.created_at >= ?""",
         (since,),
     ):
-        c = clusters.setdefault(row["id"], {"country": row["country"], "status": row["status"], "keys": []})
+        c = clusters.setdefault(row["id"], {"country": row["country"], "category": row["category"],
+                                            "status": row["status"], "keys": []})
         c["keys"].append(row["title_key"])
 
     for it in items:
         stats["items"] += 1
         best_id, best_sim = None, 0.0
         for cid, c in clusters.items():
-            if c["country"] != it["country"]:
-                continue
+            if c["country"] != it["country"] or c["category"] != it["category"]:
+                continue   # a story only gathers items from its own country and category
             sim = max(title_similarity(it["title_key"], k) for k in c["keys"])
             if sim > best_sim:
                 best_id, best_sim = cid, sim
@@ -82,11 +83,11 @@ def cluster(db: Database, countries: list[str] | None = None) -> dict:
             stats["joined"] += 1
         else:
             cid = db.insert(
-                """insert into pipeline.story_clusters (country, headline, lead_item_id, item_count, status, created_at, updated_at)
-                   values (?, ?, ?, 1, 'pending', ?, ?) returning id""",
-                (it["country"], it["title"], it["id"], utcnow(), utcnow()),
+                """insert into pipeline.story_clusters (country, category, headline, lead_item_id, item_count, status, created_at, updated_at)
+                   values (?, ?, ?, ?, 1, 'pending', ?, ?) returning id""",
+                (it["country"], it["category"], it["title"], it["id"], utcnow(), utcnow()),
             )
-            clusters[cid] = {"country": it["country"], "status": "pending", "keys": [it["title_key"]]}
+            clusters[cid] = {"country": it["country"], "category": it["category"], "status": "pending", "keys": [it["title_key"]]}
             stats["new_clusters"] += 1
 
         db.execute("update pipeline.raw_items set cluster_id = ?, status = 'clustered' where id = ?", (cid, it["id"]))
