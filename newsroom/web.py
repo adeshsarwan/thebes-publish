@@ -647,7 +647,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 {research}
 <section><h3>Shortcuts</h3><div class="keys">
 <kbd>/</kbd><span>in an empty line: add a block</span><kbd>## </kbd><span>heading</span><kbd>### </kbd><span>subheading</span>
-<kbd>- </kbd><span>bulleted list</span><kbd>1. </kbd><span>numbered list</span><kbd>&gt; </kbd><span>quote</span><kbd>---</kbd><span>divider</span>
+<kbd>- </kbd><span>bulleted list</span><kbd>1. </kbd><span>numbered list</span><kbd>&gt; </kbd><span>quote</span><kbd>---</kbd><span>divider</span><kbd>/image</kbd><span>image (or <b>+ Add image</b>)</span><kbd>![</kbd><span>image, typed in an empty line</span>
 <kbd>⌘B</kbd><span>bold</span><kbd>⌘I</kbd><span>italic</span><kbd>⌘K</kbd><span>link (select text first)</span><kbd>⌘S</kbd><span>save draft</span>
 </div></section></aside>"""
 
@@ -666,7 +666,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <div id="ed-headline" class="ed-title" contenteditable="true" role="textbox" aria-label="Headline" data-placeholder="Add a headline"></div>
 <div id="ed-dek" class="ed-dek" contenteditable="true" role="textbox" aria-label="Standfirst" data-placeholder="Standfirst: one sentence on what this means for readers' money"></div>
 <div id="ed-blocks" aria-label="Story body"></div>
-<button type="button" id="ed-add" class="ed-add">+ Add block</button>
+<div class="ed-adds"><button type="button" id="ed-add" class="ed-add">+ Add block</button><button type="button" id="ed-add-img" class="ed-add">+ Add image</button></div>
 </div></div>{side}</div>
 <script id="ed-data" type="application/json">{data_json}</script>
 <script src="/static/editor.js"></script>"""
@@ -703,7 +703,8 @@ def images_panel(db: Database, story: dict, actor: dict | None, mode: str = "pag
             "query": (ev or {}).get("image_query") or rev.get("headline") or "",
             "prompt": (ev or {}).get("image_prompt") or "", "styles": media.style_names(), "aspects": c["aspects"],
             "default_aspect": c["default_aspect"], "max_variations": c["max_variations"], "model": c["model"],
-            "max_upload_mb": c["max_upload_mb"], "sections": sections, "blocks": bool(rev.get("blocks")) or mode == "editor"}
+            "max_upload_mb": c["max_upload_mb"], "sections": sections,
+            "country": COUNTRY_NAMES.get(story.get("country"), story.get("country") or ""), "blocks": bool(rev.get("blocks")) or mode == "editor"}
     data = json.dumps(boot, default=str).replace("<", "\\u003c")
     tag = "section" if mode == "editor" else "div"
     cls = "img-panel img-editor" if mode == "editor" else "panel img-panel img-page"
@@ -1628,7 +1629,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     return self._json(200, media.search_stock(one("q"), one("provider", "all"),
                                                               int(one("page", "1") or 1) if one("page", "1").isdigit() else 1,
-                                                              24, one("orientation", "landscape")))
+                                                              24, one("orientation", "landscape"),
+                                                              country=story.get("country") if one("local", "1") == "1" else None))
                 except media.MediaError as exc:
                     return self._json(400, {"error": str(exc)})
             if path == "/scoring":

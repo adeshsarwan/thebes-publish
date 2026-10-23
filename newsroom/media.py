@@ -260,12 +260,34 @@ def _pexels(p: dict) -> dict:
 ORIENT = {"landscape": ("landscape", "landscape"), "portrait": ("portrait", "portrait"), "square": ("squarish", "square")}
 
 
+# Photo sites can't filter by country, so searches add a place word (a setting cue, not a look for
+# the people): "student loan" -> "student loan usa". Editors can switch it off in the search box.
+COUNTRY_WORDS = {"US": "usa", "UK": "uk", "CA": "canada", "AU": "australia"}
+COUNTRY_SYNONYMS = {"US": ("usa", "us", "america", "american", "united states"),
+                    "UK": ("uk", "britain", "british", "england", "london", "united kingdom"),
+                    "CA": ("canada", "canadian", "toronto", "vancouver"),
+                    "AU": ("australia", "australian", "sydney", "melbourne")}
+
+
+def with_country(query: str, country: str | None) -> str:
+    word = COUNTRY_WORDS.get((country or "").upper())
+    if not word:
+        return query
+    words = set(re.findall(r"[a-z]+", query.lower()))
+    low = query.lower()
+    if any((s in words) if " " not in s else (s in low) for s in COUNTRY_SYNONYMS[country.upper()]):
+        return query
+    return f"{query} {word}"
+
+
 def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int = 12,
-                 orientation: str = "landscape") -> dict:
-    """Search Unsplash and/or Pexels. Returns {"results": [...], "errors": {provider: message}}."""
+                 orientation: str = "landscape", country: str | None = None) -> dict:
+    """Search Unsplash and/or Pexels. Returns {"results": [...], "errors": {provider: message}, "query": used}.
+    With `country`, a place word for that country is added to the search."""
     query = re.sub(r"\s+", " ", (query or "")).strip()[:100]
     if not query:
         raise MediaError("Type something to search for.")
+    query = with_country(query, country)
     per_page = max(1, min(30, int(per_page)))
     page = max(1, min(50, int(page)))
     o_u, o_p = ORIENT.get(orientation, (None, None))
@@ -309,13 +331,16 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
             if isinstance(exc, requests.HTTPError) and exc.response is not None:
                 msg = {401: "the API key was refused", 403: "the hourly limit is used up or the key was refused",
                        429: "the hourly limit is used up"}.get(exc.response.status_code, f"HTTP {exc.response.status_code}")
+            elif isinstance(exc, requests.RequestException):
+                log.warning("stock search %s failed: %s", prov, exc)
+                msg = "couldn't reach the photo site; try again in a minute"
             errors[prov] = msg
             results[prov] = []
     merged = []   # alternate providers so both show near the top
     lists = [results.get(p, []) for p in want]
     for i in range(max((len(x) for x in lists), default=0)):
         merged += [x[i] for x in lists if i < len(x)]
-    return {"results": merged, "errors": errors}
+    return {"results": merged, "errors": errors, "query": query}
 
 
 def stock_photo(provider: str, provider_id: str) -> dict:
@@ -483,9 +508,15 @@ def queue_generation(db: Database, user: dict | None, story_id: int, prompt: str
     return ids
 
 
-def full_prompt(prompt: str, style: str | None) -> str:
+def full_prompt(prompt: str, style: str | None, country: str | None = None) -> str:
     prefix = (cfg()["styles"].get(style or "") or "").strip()
-    return (prefix + "\n\nScene: " + prompt.strip()) if prefix else prompt.strip()
+    text = (prefix + "\n\nScene: " + prompt.strip()) if prefix else prompt.strip()
+    from pipeline.settings import COUNTRY_NAMES
+    name = COUNTRY_NAMES.get((country or "").upper())
+    if name:
+        text += (f"\nSetting: {name}. Places, homes, streets, money and signage should look like {name}; "
+                 f"any people should look like everyday residents of {name}, reflecting its diversity.")
+    return text
 
 
 def run_generation(db: Database, image_ids: list[int], client=None) -> dict:
@@ -502,7 +533,9 @@ def run_generation(db: Database, image_ids: list[int], client=None) -> dict:
         db.execute("update newsroom.story_images set status = 'generating', updated_at = ? where id = ?", (utcnow(), iid))
         db.commit()
         try:
-            data, _mime = client.generate_image(model=c["model"], prompt=full_prompt(row["prompt"] or "", row["style"]),
+            st_row = db.fetchone("select country from newsroom.stories where id = ?", (row["story_id"],)) or {}
+            data, _mime = client.generate_image(model=c["model"],
+                                                prompt=full_prompt(row["prompt"] or "", row["style"], st_row.get("country")),
                                                 aspect=row["aspect"] or c["default_aspect"], size=c["image_size"])
             saved = save_file(row["story_id"], data, "ai")
             db.execute(
@@ -622,12 +655,19 @@ CHOOSE_SCHEMA = {
 CHOOSE_SYSTEM = """You are a picture editor for a news website. Choose stock photos for a story.
 A good photo fits the story's subject and tone, shows a generic scene (no recognisable brands,
 logos, celebrities or text that would mislead), and would not embarrass anyone pictured.
+The story is for readers in one country: prefer photos whose setting fits that country (its money,
+signage, streets, homes, landmarks) and skip photos clearly set somewhere else. Never choose or reject
+a photo because of the ethnicity of the people in it.
 Answer 0 when nothing is a reasonable fit; an illustration will be made instead."""
+
+
+from pipeline.settings import COUNTRY_NAMES as COUNTRY_NAMES_  # noqa: E402
 
 
 def _choose_prompt(story: dict, candidates: list[dict], inline: int) -> str:
     lines = [f"HEADLINE: {story.get('headline')}", f"STANDFIRST: {story.get('dek') or ''}",
-             f"CATEGORY: {categories.name(story.get('category'))}", "",
+             f"CATEGORY: {categories.name(story.get('category'))}",
+             f"READERS IN: {COUNTRY_NAMES_.get(story.get('country') or '', story.get('country') or 'any country')}", "",
              f"Pick a main image and up to {inline} other photos for inside the story.", "", "CANDIDATES:"]
     for i, c in enumerate(candidates, 1):
         orient = "landscape" if (c.get("width") or 0) >= (c.get("height") or 0) else "portrait"
@@ -651,7 +691,8 @@ def auto_images(db: Database, story: dict, client=None) -> dict:
             return result
         client = client or get_client()
         rev = story.get("revision") or {}
-        info = {"headline": rev.get("headline"), "dek": rev.get("dek"), "category": story.get("category")}
+        info = {"headline": rev.get("headline"), "dek": rev.get("dek"), "category": story.get("category"),
+                "country": story.get("country")}
         ev = db.fetchone(
             """select e.image_query, e.image_prompt from pipeline.evaluations e
                where e.cluster_id = ? order by e.id desc limit 1""", (story.get("cluster_id"),)) if story.get("cluster_id") else None
@@ -660,7 +701,7 @@ def auto_images(db: Database, story: dict, client=None) -> dict:
         candidates = []
         st = status()
         if st["unsplash"] or st["pexels"]:
-            found = search_stock(query, "all", per_page=int(auto.get("stock_results", 12)))
+            found = search_stock(query, "all", per_page=int(auto.get("stock_results", 12)), country=story.get("country"))
             candidates = [x for x in found["results"] if (x.get("width") or 0) >= 1200]
         inline_n = int(auto.get("inline_images", 1))
         if candidates:

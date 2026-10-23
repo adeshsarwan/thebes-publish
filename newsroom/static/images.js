@@ -260,6 +260,14 @@
       stockTab.prov || (provs.length > 1 ? "all" : (provs[0] || ["all"])[0]));
     var orient = select("orientation", [["landscape", "Landscape"], ["portrait", "Portrait"], ["square", "Square"], ["any", "Any shape"]], stockTab.orient || "landscape");
     form.appendChild(q); form.appendChild(prov); form.appendChild(orient);
+    var local = null;
+    if (boot.country) {
+      var lab = el("label", "img-local");
+      local = el("input", "", { type: "checkbox" }); local.checked = stockTab.local !== false;
+      lab.appendChild(local); lab.appendChild(document.createTextNode(" Set in " + boot.country));
+      lab.title = "Photo sites can't filter by country, so a place word is added to the search";
+      form.appendChild(lab);
+    }
     form.appendChild(el("button", "primary", { type: "submit" }, "Search"));
     pane.appendChild(form);
     if (!st.unsplash && !st.pexels) pane.appendChild(el("p", "img-note warn", null, "Stock search isn't set up on this server: add UNSPLASH_ACCESS_KEY to its settings."));
@@ -269,14 +277,15 @@
     var page = 1;
     function run(reset) {
       if (reset) { page = 1; grid.innerHTML = ""; }
-      stockTab.last = q.value; stockTab.prov = prov.value; stockTab.orient = orient.value;
+      stockTab.last = q.value; stockTab.prov = prov.value; stockTab.orient = orient.value; stockTab.local = local ? local.checked : true;
       errs.textContent = ""; more.innerHTML = ""; more.appendChild(el("span", "meta", null, "Searching…"));
-      var url = "/story/" + sid + "/images/search?" + new URLSearchParams({ q: q.value, provider: prov.value, orientation: orient.value, page: page });
+      var url = "/story/" + sid + "/images/search?" + new URLSearchParams({ q: q.value, provider: prov.value, orientation: orient.value, page: page, local: local && local.checked ? "1" : "0" });
       fetch(url, { credentials: "same-origin" }).then(answer).then(function (j) {
         more.innerHTML = "";
         var e = Object.keys(j.errors || {}).map(function (k) { return k + ": " + j.errors[k]; });
         errs.textContent = e.join(" · ");
-        if (!j.results.length && page === 1) grid.appendChild(el("p", "meta", null, "Nothing found. Try simpler words: a scene, not a headline."));
+        if (page === 1 && j.query && j.query !== q.value.trim()) more.appendChild(el("span", "meta", null, "Searched for “" + j.query + "”. "));
+        if (!j.results.length && page === 1 && !e.length) grid.appendChild(el("p", "meta", null, "Nothing found. Try simpler words: a scene, not a headline."));
         j.results.forEach(function (p) { grid.appendChild(result(p)); });
         if (j.results.length) more.appendChild(button("More results", "", function () { page += 1; run(false); }));
       }).catch(function (e) { more.innerHTML = ""; errs.textContent = e.message; });

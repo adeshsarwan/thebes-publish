@@ -40,7 +40,8 @@ def eval_schema(category: str | None) -> dict:
             "rationale": {"type": "STRING"},
             "image_query": {"type": "STRING", "description":
                             "3-6 plain words to search stock photo sites (Unsplash, Pexels) for a main image: "
-                            "a generic scene, no names of people, brands or places"},
+                            "a generic scene that fits the story's country (e.g. 'us dollar bills', 'london "
+                            "terraced houses'), no names of people or brands"},
             "image_prompt": {"type": "STRING", "description":
                              "One or two sentences describing an editorial illustration for this story: a generic "
                              "scene, no text, logos or real people"},

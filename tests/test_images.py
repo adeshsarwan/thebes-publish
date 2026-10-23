@@ -121,6 +121,20 @@ class ImageUnitTest(ImagesBase):
         with self.assertRaises(media.MediaError):
             media.search_stock("   ")
 
+    def test_country_setting_in_searches_and_prompts(self):
+        from newsroom import media
+        self.assertEqual(media.with_country("student loan", "US"), "student loan usa")
+        self.assertEqual(media.with_country("London terraced houses", "UK"), "London terraced houses")
+        self.assertEqual(media.with_country("family in the united states", "US"), "family in the united states")
+        self.assertEqual(media.with_country("bus stop", None), "bus stop")
+        calls = []
+        with mock.patch("newsroom.media.requests.get", side_effect=fake_get(calls)):
+            out = media.search_stock("rent bills", "unsplash", country="AU")
+        self.assertEqual((out["query"], calls[0][1]["query"]), ("rent bills australia", "rent bills australia"))
+        text = media.full_prompt("A family reading bills", "illustration", "CA")
+        self.assertIn("Setting: Canada", text)
+        self.assertIn("reflecting its diversity", text)
+
     def test_image_blocks_only_allow_our_hosts(self):
         from newsroom import blocks as blk
         ok = {"type": "image", "data": {"url": "https://images.unsplash.com/photo-1?w=1600", "alt": "<b>Bills</b>",
@@ -349,6 +363,8 @@ class ImageHttpTest(ImagesBase):
         self.assertIn("image", self.op.open(self.base + "/static/images.js").read().decode())
         edit = self.op.open(self.base + f"/story/{self.sid}/edit").read().decode()
         self.assertIn('class="img-panel img-editor"', edit)
+        self.assertIn('id="ed-add-img"', edit)
+        self.assertIn("<kbd>/image</kbd>", edit)
 
         st = self._json(f"/story/{self.sid}/images.json")
         self.assertTrue(st["can_manage"])

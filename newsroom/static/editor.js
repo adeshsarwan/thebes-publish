@@ -343,11 +343,19 @@
     [/^>\s$/, { type: "quote", data: {} }],
     [/^(---|___)$/, { type: "delimiter", data: {} }]
   ];
+  // "![" in an empty paragraph (Markdown's image syntax) opens the image picker
+  function imageShortcut(w, body) {
+    if (textOf(body) !== "![") return false;
+    body.innerHTML = "";
+    document.dispatchEvent(new CustomEvent("fh-pick-image", { detail: { after: w, clear: w } }));
+    return true;
+  }
   root.addEventListener("input", function (ev) {
     markDirty();
     var w = blockOf(ev.target); if (!w) return;
     var body = bodyOf(w);
     if (w.dataset.type === "paragraph") {
+      if (imageShortcut(w, body)) return;
       var t = textOf(body);
       for (var i = 0; i < SHORTCUTS.length; i++) {
         if (SHORTCUTS[i][0].test(t)) {
@@ -513,6 +521,10 @@
     openMenu(ev.currentTarget, { mode: "insert", after: last });
   });
   document.addEventListener("mousedown", function (ev) { if (menu && !menu.el.contains(ev.target)) closeMenu(); });
+  var addImg = document.getElementById("ed-add-img");
+  if (addImg) addImg.addEventListener("click", function () {
+    document.dispatchEvent(new CustomEvent("fh-pick-image", { detail: { after: null } }));
+  });
 
   // ------------------------------------------------------------------ serialise, save, count, backup
   function serialise() {
