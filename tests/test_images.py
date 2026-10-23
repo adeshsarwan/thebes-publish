@@ -85,8 +85,10 @@ class ImagesBase(Base):
     def setUpClass(cls):
         super().setUpClass()
         os.environ["MEDIA_LOCAL_DIR"] = str(cls.tmp / "media")
-        for k in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "MEDIA_BASE_URL", "IMAGE_MODEL"):
-            os.environ.pop(k, None)
+        # the server's own .env must not leak in (the deploy runs these tests on the server)
+        for k in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "MEDIA_BASE_URL", "IMAGE_MODEL",
+                  "PIXABAY_API_KEY"):
+            os.environ[k] = ""
         os.environ["UNSPLASH_ACCESS_KEY"] = "test-unsplash"
         os.environ["PEXELS_API_KEY"] = "test-pexels"
 

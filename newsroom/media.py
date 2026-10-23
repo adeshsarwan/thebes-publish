@@ -128,7 +128,7 @@ class LocalStorage:
 
     def __init__(self, root: Path | None = None):
         self.root = Path(root or os.getenv("MEDIA_LOCAL_DIR") or ROOT / "data" / "media")
-        self.base = os.getenv("MEDIA_BASE_URL", "/media").rstrip("/")
+        self.base = (os.getenv("MEDIA_BASE_URL") or "/media").rstrip("/")
 
     def put(self, key: str, data: bytes, content_type: str) -> str:
         path = self.root / key
