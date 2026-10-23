@@ -88,11 +88,48 @@
       body.appendChild(el("p", "meta", null, "The main image and in-story images go to the site when the story is published."));
     }
     var imgs = state.images || [];
+    renderHero(imgs);
     if (!imgs.length) body.appendChild(el("p", "meta", null, "No images yet." + (state.can_manage ? " Search stock photos first; generate an illustration if nothing fits." : "")));
     var list = el("div", "img-list");
     imgs.forEach(function (img) { list.appendChild(card(img)); });
     body.appendChild(list);
     poll();
+  }
+
+  function setHero(img) {
+    return post("/images/" + img.id + "/update", { role: "hero" })
+      .then(function () { toast("Main image set. It shows above the story."); refresh(); })
+      .catch(function (e) { toast(e.message, true); });
+  }
+  function chooseHero() { pending = { hero: true }; openDialog((state.images || []).some(function (i) { return i.status === "ready"; }) ? "story" : "stock"); }
+  // The main image: a box at the top of the panel, and in the editor a slot above the story body
+  function renderHero(imgs) {
+    var hero = imgs.filter(function (i) { return i.role === "hero" && i.status === "ready"; })[0];
+    var box = el("div", "img-hero-box");
+    box.appendChild(el("div", "img-hero-label", null, "Main image"));
+    if (hero) {
+      box.appendChild(el("img", "", { src: thumb(hero), alt: hero.alt || "" }));
+      if (hero.credit) box.appendChild(creditLine(hero));
+    } else box.appendChild(el("p", "meta", null, "None yet. It shows at the top of the story on the site, and as hero_image in the API."));
+    if (state.can_manage) box.appendChild(button(hero ? "Change main image" : "Choose main image", hero ? "" : "primary", chooseHero));
+    body.appendChild(box);
+    var slot = document.getElementById("ed-hero");
+    if (slot) {
+      slot.innerHTML = "";
+      if (hero) {
+        var fig = el("figure", "ed-hero-fig");
+        fig.appendChild(el("img", "", { src: hero.sizes && hero.sizes["1600"] || hero.url, alt: hero.alt || "" }));
+        var cap = el("figcaption", "", null, "Main image" + (hero.caption ? " · " + hero.caption : ""));
+        if (hero.credit) { cap.appendChild(document.createTextNode(" · ")); cap.appendChild(creditLine(hero)); }
+        fig.appendChild(cap); slot.appendChild(fig);
+      }
+      if (state.can_manage) slot.appendChild(button(hero ? "Change main image" : "+ Add a main image", "ed-hero-btn", chooseHero));
+    }
+  }
+  function usedInBody(img) {
+    if (!editor || !window.FH_EDITOR) return false;
+    try { return window.FH_EDITOR.serialise().some(function (b) { return b.type === "image" && (b.data.image_id === img.id || b.data.url === img.url); }); }
+    catch (e) { return false; }
   }
 
   function card(img) {
@@ -104,7 +141,9 @@
     c.appendChild(pic);
     var info = el("div", "img-info");
     var head = el("div", "img-head");
-    head.appendChild(el("span", "img-badge role", null, img.status === "ready" ? ROLE[img.role] : img.status === "draft" ? "Not generated" : img.status));
+    var label = img.status === "ready" ? (img.role === "gallery" && usedInBody(img) ? "In the story" : ROLE[img.role])
+      : img.status === "draft" ? "Not generated" : img.status;
+    head.appendChild(el("span", "img-badge role", null, label));
     head.appendChild(el("span", "img-badge", null, KIND[img.provider] || img.kind));
     info.appendChild(head);
     if (img.prompt && img.kind === "generated") info.appendChild(el("div", "img-prompt", null, img.prompt));
@@ -165,6 +204,7 @@
     save.disabled = true;
     [role, alt, cap, credit, pos].forEach(function (f) { if (f) f.addEventListener(f.tagName === "SELECT" ? "change" : "input", function () { save.disabled = false; save.classList.add("primary"); }); });
     row2.appendChild(save);
+    if (img.role !== "hero") row2.appendChild(button("Make main image", "", function () { setHero(img); }));
     if (editor && window.FH_EDITOR && window.FH_EDITOR.insertImage) {
       row2.appendChild(button("Insert in story", "", function () {
         insert(Object.assign({}, img, { alt: alt.value, caption: cap.value }), pending || {}); pending = null;
@@ -197,7 +237,7 @@
       credit_url: img.credit_url || "", provider: img.provider, photographer: img.photographer || "",
       photographer_url: img.photographer_url || "", image_id: img.id, width: img.width || undefined, height: img.height || undefined,
       sizes: img.sizes || {} }, where);
-    closeDialog();
+    closeDialog(); render();
   }
 
   // ------------------------------------------------------------------ dialog
@@ -231,6 +271,7 @@
     // in the editor picker, put the new image straight into the story
     refresh().then(function () {
       if (!pending) return;
+      if (pending.hero) { pending = null; closeDialog(); return; }
       var img = (state.images || []).filter(function (i) { return i.id === id; })[0];
       if (img && img.status === "ready") { var w = pending; pending = null; insert(img, w); }
     });
@@ -244,7 +285,10 @@
       var c = el("div", "img-res");
       c.appendChild(el("img", "", { src: thumb(img), alt: img.alt || "", loading: "lazy" }));
       c.appendChild(img.credit ? creditLine(img) : el("div", "img-credit", null, KIND[img.provider] || ""));
-      c.appendChild(button("Insert", "primary", function () { var w = pending; pending = null; insert(img, w); }));
+      if (pending && pending.hero) c.appendChild(button(img.role === "hero" ? "Current main image" : "Use as main image", "primary", function () {
+        pending = null; closeDialog(); setHero(img);
+      }));
+      else c.appendChild(button("Insert", "primary", function () { var w = pending; pending = null; insert(img, w); }));
       grid.appendChild(c);
     });
     pane.appendChild(grid);
@@ -308,7 +352,8 @@
         .then(function (j) { b.textContent = "Added"; toast("Added to the story's images."); afterAdd(j.id); })
         .catch(function (e) { b.disabled = false; toast(e.message, true); });
     }
-    if (pending) row.appendChild(button("Insert", "primary", function (b) { add(editor ? "inline" : "gallery", b); }));
+    if (pending && pending.hero) row.appendChild(button("Use as main image", "primary", function (b) { add("hero", b); }));
+    else if (pending) row.appendChild(button("Insert", "primary", function (b) { add(editor ? "inline" : "gallery", b); }));
     else {
       row.appendChild(button("Main image", "primary", function (b) { add("hero", b); }));
       row.appendChild(button(boot.blocks ? "Add" : "In the story", "", function (b) { add(boot.blocks ? "gallery" : "inline", b); }));
@@ -329,7 +374,7 @@
     var aspect = select("aspect", boot.aspects, boot.default_aspect);
     var counts = []; for (var i = 1; i <= boot.max_variations; i++) counts.push([i, i === 1 ? "1 image" : i + " versions"]);
     var count = select("count", counts, 1);
-    var role = select("role", [["hero", "Main image"], ["inline", "In the story"], ["gallery", "Decide later"]], "gallery");
+    var role = select("role", [["hero", "Main image"], ["inline", "In the story"], ["gallery", "Decide later"]], pending && pending.hero ? "hero" : "gallery");
     pane.appendChild(ta);
     var row = el("div", "img-row"); [style, aspect, count, role].forEach(function (x) { row.appendChild(x); }); pane.appendChild(row);
     var cost = el("p", "meta");
@@ -371,7 +416,7 @@
     var file = el("input", "", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif", "aria-label": "Image file" });
     var alt = el("input", "", { type: "text", placeholder: "Alt text: what the image shows" });
     var credit = el("input", "", { type: "text", placeholder: "Credit, e.g. Photo: Jane Doe / Agency (pasting Unsplash's credit snippet is fine)" });
-    var role = select("role", [["gallery", "Decide later"], ["hero", "Main image"], ["inline", "In the story"]], pending ? "inline" : "gallery");
+    var role = select("role", [["gallery", "Decide later"], ["hero", "Main image"], ["inline", "In the story"]], pending ? (pending.hero ? "hero" : "inline") : "gallery");
     [file, alt, credit, role].forEach(function (x) { pane.appendChild(x); });
     pane.appendChild(el("p", "meta", null, "JPEG, PNG, WebP or GIF up to " + boot.max_upload_mb + " MB. Saved as WebP in several sizes."));
     pane.appendChild(button("Upload", "primary", function (b) {

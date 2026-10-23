@@ -665,6 +665,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <div class="ed-paper">
 <div id="ed-headline" class="ed-title" contenteditable="true" role="textbox" aria-label="Headline" data-placeholder="Add a headline"></div>
 <div id="ed-dek" class="ed-dek" contenteditable="true" role="textbox" aria-label="Standfirst" data-placeholder="Standfirst: one sentence on what this means for readers' money"></div>
+<div id="ed-hero" class="ed-hero" aria-label="Main image"></div>
 <div id="ed-blocks" aria-label="Story body"></div>
 <div class="ed-adds"><button type="button" id="ed-add" class="ed-add">+ Add block</button><button type="button" id="ed-add-img" class="ed-add">+ Add image</button></div>
 </div></div>{side}</div>
