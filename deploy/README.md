@@ -25,7 +25,7 @@ Everything else on the server (other nginx sites, MySQL, RabbitMQ) is left alone
 
 ## First install
 
-### 1. Get the code onto the server (one paste, as root on 172.236.151.195)
+### 1. Get the code onto the server (one paste, as root on 172.105.48.107)
 
 ```bash
 useradd --system --create-home --home-dir /home/storyhub --shell /bin/bash storyhub

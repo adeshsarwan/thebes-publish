@@ -237,7 +237,7 @@ if [ "$NEW_ACTIONS_KEY" = 1 ]; then
 ==================== GitHub Actions secrets (one-time) ====================
 In GitHub: adeshsarwan/thebes-publish > Settings > Secrets and variables > Actions > New repository secret
 
-DEPLOY_HOST         = the server's IP, e.g. 172.236.151.195
+DEPLOY_HOST         = the server's IP, e.g. 172.105.48.107
 DEPLOY_KNOWN_HOSTS  = everything between the lines below:
 -----
 $(for k in /etc/ssh/ssh_host_*_key.pub; do echo "$(hostname -I | awk '{print $1}') $(cut -d' ' -f1,2 "$k")"; done)
