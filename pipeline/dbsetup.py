@@ -4,9 +4,9 @@
     python -m pipeline.cli db-setup --write-env     # also writes role URLs into .env
 
 Roles:
-    fh_pipeline  read/write pipeline; create AI drafts in newsroom
-    fh_newsroom  read pipeline; read/write newsroom; publish into site
-    fh_site      read-only on site (this is what the public website uses)
+    story_pipeline  read/write pipeline; create AI drafts in newsroom
+    story_newsroom  read pipeline; read/write newsroom; publish into site
+    story_site      read-only on site (this is what the public website uses)
 
 Safe to re-run: tables use IF NOT EXISTS, roles are created once and their
 passwords are kept in .env, and grants are reapplied (needed after schema changes).
@@ -22,31 +22,31 @@ from urllib.parse import urlsplit, urlunsplit
 from .db import SCHEMA_PATH, Database
 from .settings import ROOT
 
-ROLES = ("fh_pipeline", "fh_newsroom", "fh_site")
-ENV_KEYS = {"fh_pipeline": "PIPELINE_DATABASE_URL", "fh_newsroom": "NEWSROOM_DATABASE_URL", "fh_site": "SITE_DATABASE_URL"}
+ROLES = ("story_pipeline", "story_newsroom", "story_site")
+ENV_KEYS = {"story_pipeline": "PIPELINE_DATABASE_URL", "story_newsroom": "NEWSROOM_DATABASE_URL", "story_site": "SITE_DATABASE_URL"}
 
 GRANTS = """
 revoke all on schema pipeline, newsroom, site from public;
 
-grant usage on schema pipeline to fh_pipeline;
-grant select, insert, update, delete on all tables in schema pipeline to fh_pipeline;
-grant usage, select on all sequences in schema pipeline to fh_pipeline;
-grant usage on schema newsroom to fh_pipeline;
-grant select, insert on newsroom.stories, newsroom.story_revisions, newsroom.story_events to fh_pipeline;
-grant usage, select on sequence newsroom.stories_id_seq, newsroom.story_revisions_id_seq, newsroom.story_events_id_seq to fh_pipeline;
+grant usage on schema pipeline to story_pipeline;
+grant select, insert, update, delete on all tables in schema pipeline to story_pipeline;
+grant usage, select on all sequences in schema pipeline to story_pipeline;
+grant usage on schema newsroom to story_pipeline;
+grant select, insert on newsroom.stories, newsroom.story_revisions, newsroom.story_events to story_pipeline;
+grant usage, select on sequence newsroom.stories_id_seq, newsroom.story_revisions_id_seq, newsroom.story_events_id_seq to story_pipeline;
 
-grant usage on schema pipeline to fh_newsroom;
-grant select on all tables in schema pipeline to fh_newsroom;
-grant insert, update on pipeline.sources to fh_newsroom;
-grant usage on schema newsroom to fh_newsroom;
-grant select, insert, update, delete on all tables in schema newsroom to fh_newsroom;
-grant usage, select on all sequences in schema newsroom to fh_newsroom;
-grant usage on schema site to fh_newsroom;
-grant select, insert, update on all tables in schema site to fh_newsroom;
-grant usage, select on all sequences in schema site to fh_newsroom;
+grant usage on schema pipeline to story_newsroom;
+grant select on all tables in schema pipeline to story_newsroom;
+grant insert, update on pipeline.sources to story_newsroom;
+grant usage on schema newsroom to story_newsroom;
+grant select, insert, update, delete on all tables in schema newsroom to story_newsroom;
+grant usage, select on all sequences in schema newsroom to story_newsroom;
+grant usage on schema site to story_newsroom;
+grant select, insert, update on all tables in schema site to story_newsroom;
+grant usage, select on all sequences in schema site to story_newsroom;
 
-grant usage on schema site to fh_site;
-grant select on all tables in schema site to fh_site;
+grant usage on schema site to story_site;
+grant select on all tables in schema site to story_site;
 """
 
 

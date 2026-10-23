@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Finance Hub newsroom: one-time server setup (Ubuntu 22.04/24.04). Run as root:
+# Story Hub newsroom: one-time server setup (Ubuntu 22.04/24.04). Run as root:
 #
 #   sudo bash deploy/setup_vps.sh [--domain publish.thebesads.com] [--restore /path/storyhub.dump]
 #
 # Safe to re-run: every step checks what is already there. It never touches
 # other sites, MySQL, RabbitMQ or existing nginx configs; it only adds:
 #   - PostgreSQL 17 (listening on this machine only) with database "storyhub"
-#   - system user "finhub", code in /opt/finance-hub, data in /var/lib/finance-hub
-#   - systemd service "finance-hub-desk" on 127.0.0.1:8765
-#   - /etc/cron.d/finance-hub (pipeline schedule every 10 min, nightly backup)
+#   - system user "storyhub", code in /opt/story-hub, data in /var/lib/story-hub
+#   - systemd service "story-hub-desk" on 127.0.0.1:8765
+#   - /etc/cron.d/story-hub (pipeline schedule every 10 min, nightly backup)
 #   - nginx site for the domain, accepting Cloudflare's addresses only
 set -euo pipefail
 
 DOMAIN="publish.thebesads.com"
 RESTORE=""
-APP_DIR="/opt/finance-hub"
-DATA_DIR="/var/lib/finance-hub"
-BACKUP_DIR="/var/backups/finance-hub"
-CERT_DIR="/etc/ssl/finance-hub"
-APP_USER="finhub"
+APP_DIR="/opt/story-hub"
+DATA_DIR="/var/lib/story-hub"
+BACKUP_DIR="/var/backups/story-hub"
+CERT_DIR="/etc/ssl/story-hub"
+APP_USER="storyhub"
 DB_NAME="storyhub"
-DB_ADMIN="fh_admin"
+DB_ADMIN="story_admin"
 PORT=8765
 PG_MAJOR=17
 
@@ -36,7 +36,7 @@ done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
-[ -f "$SRC/requirements.txt" ] && [ -f "$SRC/deploy/finance-hub-desk.service" ] || { echo "Run this from the project folder: sudo bash deploy/setup_vps.sh"; exit 1; }
+[ -f "$SRC/requirements.txt" ] && [ -f "$SRC/deploy/story-hub-desk.service" ] || { echo "Run this from the project folder: sudo bash deploy/setup_vps.sh"; exit 1; }
 
 # ---------------------------------------------------------------- packages
 say "Packages"
@@ -104,7 +104,7 @@ sudo -u postgres psql -q -d "$DB_NAME" -c "grant all on database $DB_NAME to $DB
 if [ -n "$RESTORE" ]; then
   TABLES="$(sudo -u postgres psql -tAd "$DB_NAME" -c "select count(*) from information_schema.tables where table_schema in ('pipeline','newsroom','site')")"
   if [ "$TABLES" != "0" ]; then
-    echo "Database already has Finance Hub tables; not restoring over them."
+    echo "Database already has Story Hub tables; not restoring over them."
   else
     echo "Restoring $RESTORE ..."
     PGPASSWORD="$ADMIN_PW" pg_restore -h 127.0.0.1 -p "$PGPORT" -U "$DB_ADMIN" -d "$DB_NAME" \
@@ -129,26 +129,26 @@ if [ -z "$(getenv GEMINI_API_KEY)" ]; then
   fi
   [ -n "$(getenv GEMINI_API_KEY)" ] || echo "!! No GEMINI_API_KEY yet: add it to $ENV_FILE before the first pull."
 fi
-# creates the schemas, the fh_pipeline/fh_newsroom/fh_site logins and their grants; saves their URLs into .env
+# creates the schemas, the story_pipeline/story_newsroom/story_site logins and their grants; saves their URLs into .env
 sudo -u "$APP_USER" .venv/bin/python -m pipeline.cli db-setup --write-env
 
 # ---------------------------------------------------------------- service, schedule, backups
 say "Desk service, schedule and backups"
-install -m 644 deploy/finance-hub-desk.service /etc/systemd/system/finance-hub-desk.service
+install -m 644 deploy/story-hub-desk.service /etc/systemd/system/story-hub-desk.service
 systemctl daemon-reload
-systemctl enable -q finance-hub-desk
-systemctl restart finance-hub-desk
-install -m 755 deploy/backup.sh /usr/local/sbin/finance-hub-backup
-cat > /etc/cron.d/finance-hub <<CRON
-# Finance Hub newsroom (installed by deploy/setup_vps.sh)
+systemctl enable -q story-hub-desk
+systemctl restart story-hub-desk
+install -m 755 deploy/backup.sh /usr/local/sbin/story-hub-backup
+cat > /etc/cron.d/story-hub <<CRON
+# Story Hub newsroom (installed by deploy/setup_vps.sh)
 SHELL=/bin/bash
 # pipeline schedule: each region runs once a day at 12:00 local time (New York, London, Sydney)
 */10 * * * * $APP_USER cd $APP_DIR && .venv/bin/python -m newsroom tick >> $DATA_DIR/tick.log 2>&1
 # nightly database backup, keeps 14 days
-30 2 * * * root /usr/local/sbin/finance-hub-backup
+30 2 * * * root /usr/local/sbin/story-hub-backup
 CRON
-chmod 644 /etc/cron.d/finance-hub
-cat > /etc/logrotate.d/finance-hub <<ROT
+chmod 644 /etc/cron.d/story-hub
+cat > /etc/logrotate.d/story-hub <<ROT
 $DATA_DIR/*.log $DATA_DIR/logs/*.log {
   weekly
   rotate 8
@@ -163,13 +163,13 @@ ROT
 say "Automatic deploys (GitHub Actions -> this server)"
 # The update script runs as root from a root-owned copy, so a code push can't change what runs as root;
 # the app code itself only ever runs as $APP_USER.
-install -m 755 -o root -g root deploy/update.sh /usr/local/sbin/finance-hub-update
-DEPLOY_USER=fhdeploy
+install -m 755 -o root -g root deploy/update.sh /usr/local/sbin/story-hub-update
+DEPLOY_USER=storydeploy
 id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --system --create-home --home-dir "/home/$DEPLOY_USER" --shell /bin/bash "$DEPLOY_USER"
-echo "$DEPLOY_USER ALL=(root) NOPASSWD: /usr/local/sbin/finance-hub-update" > /etc/sudoers.d/finance-hub-deploy
-chmod 440 /etc/sudoers.d/finance-hub-deploy
-visudo -cf /etc/sudoers.d/finance-hub-deploy >/dev/null
-KEYDIR=/root/finance-hub-actions-key
+echo "$DEPLOY_USER ALL=(root) NOPASSWD: /usr/local/sbin/story-hub-update" > /etc/sudoers.d/story-hub-deploy
+chmod 440 /etc/sudoers.d/story-hub-deploy
+visudo -cf /etc/sudoers.d/story-hub-deploy >/dev/null
+KEYDIR=/root/story-hub-actions-key
 AK="/home/$DEPLOY_USER/.ssh/authorized_keys"
 install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 700 "/home/$DEPLOY_USER/.ssh"
 NEW_ACTIONS_KEY=0
@@ -177,7 +177,7 @@ if [ ! -s "$AK" ]; then
   install -d -m 700 "$KEYDIR"
   ssh-keygen -q -t ed25519 -N "" -C "github-actions deploy thebes-publish" -f "$KEYDIR/id_ed25519"
   # this key can only run the update script: no shell, no forwarding, no terminal
-  echo "restrict,command=\"sudo /usr/local/sbin/finance-hub-update\" $(cat "$KEYDIR/id_ed25519.pub")" > "$AK"
+  echo "restrict,command=\"sudo /usr/local/sbin/story-hub-update\" $(cat "$KEYDIR/id_ed25519.pub")" > "$AK"
   chown "$DEPLOY_USER:$DEPLOY_USER" "$AK"; chmod 600 "$AK"
   NEW_ACTIONS_KEY=1
 fi
@@ -188,7 +188,7 @@ fi
 
 # ---------------------------------------------------------------- nginx (Cloudflare only)
 say "nginx"
-SNIP=/etc/nginx/snippets/finance-hub-cloudflare-only.conf
+SNIP=/etc/nginx/snippets/story-hub-cloudflare-only.conf
 {
   echo "# Cloudflare's addresses (refreshed by deploy/setup_vps.sh). Everything else is refused."
   for list in ips-v4 ips-v6; do
@@ -199,23 +199,23 @@ SNIP=/etc/nginx/snippets/finance-hub-cloudflare-only.conf
 } > "$SNIP.new"
 if grep -q '^allow .*;' "$SNIP.new"; then mv "$SNIP.new" "$SNIP"; else rm -f "$SNIP.new"; echo "!! Could not download Cloudflare's address list; keeping the old one."; fi
 install -d -m 755 "$CERT_DIR"
-SITE=/etc/nginx/sites-available/finance-hub
-sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CERT_DIR__#$CERT_DIR#g" deploy/nginx-finance-hub.conf > "$SITE"
+SITE=/etc/nginx/sites-available/story-hub
+sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CERT_DIR__#$CERT_DIR#g" deploy/nginx-story-hub.conf > "$SITE"
 if [ -s "$CERT_DIR/origin.pem" ] && [ -s "$CERT_DIR/origin.key" ]; then
   chmod 600 "$CERT_DIR/origin.key"
-  ln -sf "$SITE" /etc/nginx/sites-enabled/finance-hub
+  ln -sf "$SITE" /etc/nginx/sites-enabled/story-hub
   nginx -t && systemctl reload nginx
   NGINX_STATE="enabled for https://$DOMAIN"
 else
-  rm -f /etc/nginx/sites-enabled/finance-hub
+  rm -f /etc/nginx/sites-enabled/story-hub
   NGINX_STATE="NOT enabled yet: save the Cloudflare origin certificate as $CERT_DIR/origin.pem and its key as $CERT_DIR/origin.key, then re-run this script"
 fi
 
 # ---------------------------------------------------------------- summary
 say "Done"
 sleep 1
-systemctl --no-pager --lines=3 status finance-hub-desk | sed -n '1,3p' || true
-curl -fsS -o /dev/null -w "desk on 127.0.0.1:$PORT answers HTTP %{http_code}\n" "http://127.0.0.1:$PORT/login" || echo "!! desk not answering yet: journalctl -u finance-hub-desk -n 50"
+systemctl --no-pager --lines=3 status story-hub-desk | sed -n '1,3p' || true
+curl -fsS -o /dev/null -w "desk on 127.0.0.1:$PORT answers HTTP %{http_code}\n" "http://127.0.0.1:$PORT/login" || echo "!! desk not answering yet: journalctl -u story-hub-desk -n 50"
 cat <<NEXT
 
 nginx: $NGINX_STATE
@@ -224,8 +224,8 @@ Database: $DB_NAME on 127.0.0.1:$PGPORT (local only). Backups: $BACKUP_DIR (nigh
 Next:
   - No admin yet?   sudo -u $APP_USER -H bash -c 'cd $APP_DIR && .venv/bin/python -m newsroom create-admin'
   - Auto-publish byline: set AUTOPUBLISH_RESPONSIBLE_EDITOR=<your email> in $ENV_FILE,
-    then: systemctl restart finance-hub-desk
-  - Updates later:  sudo bash $APP_DIR/deploy/update.sh
+    then: systemctl restart story-hub-desk
+  - Updates: automatic on every push to main, or by hand:  sudo story-hub-update
 See deploy/README.md for the Cloudflare steps.
 NEXT
 if [ "$NEW_ACTIONS_KEY" = 1 ]; then

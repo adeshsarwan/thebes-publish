@@ -13,9 +13,9 @@ Three systems, one PostgreSQL database, three schemas:
 
 | DB role | Can do | Used by |
 |---|---|---|
-| `fh_pipeline` | read/write `pipeline`; create AI drafts in `newsroom` | `python -m pipeline.cli` |
-| `fh_newsroom` | read `pipeline`; read/write `newsroom`; write `site` (publish) | `python -m newsroom` |
-| `fh_site` | **read-only** `site` | the public website |
+| `story_pipeline` | read/write `pipeline`; create AI drafts in `newsroom` | `python -m pipeline.cli` |
+| `story_newsroom` | read `pipeline`; read/write `newsroom`; write `site` (publish) | `python -m newsroom` |
+| `story_site` | **read-only** `site` | the public website |
 
 Postgres itself enforces this: the website login cannot see drafts, and the pipeline cannot publish.
 

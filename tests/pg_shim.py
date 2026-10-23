@@ -53,7 +53,7 @@ class _Cursor:
 class PsqlConnection:
     def __init__(self, url: str, preamble: str = ""):
         self.url = url
-        self.preamble = preamble          # e.g. "set role fh_site;" applied to every statement
+        self.preamble = preamble          # e.g. "set role story_site;" applied to every statement
 
     def _run(self, sql: str) -> str:
         proc = subprocess.run(

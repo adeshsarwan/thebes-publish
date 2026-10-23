@@ -164,7 +164,7 @@ def uninstall() -> None:
         p.unlink()
 
 
-CRON_FILE = Path("/etc/cron.d/finance-hub")   # written by deploy/setup_vps.sh on a Linux server
+CRON_FILE = Path("/etc/cron.d/story-hub")   # written by deploy/setup_vps.sh on a Linux server
 
 
 def installed() -> bool:

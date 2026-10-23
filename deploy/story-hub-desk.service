@@ -1,15 +1,15 @@
 [Unit]
-Description=Finance Hub newsroom desk
+Description=Story Hub newsroom desk
 After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=finhub
-Group=finhub
-WorkingDirectory=/opt/finance-hub
-# settings and database logins come from /opt/finance-hub/.env
-ExecStart=/opt/finance-hub/.venv/bin/python -m newsroom serve --port 8765
+User=storyhub
+Group=storyhub
+WorkingDirectory=/opt/story-hub
+# settings and database logins come from /opt/story-hub/.env
+ExecStart=/opt/story-hub/.venv/bin/python -m newsroom serve --port 8765
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
@@ -18,7 +18,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/opt/finance-hub /var/lib/finance-hub
+ReadWritePaths=/opt/story-hub /var/lib/story-hub
 
 [Install]
 WantedBy=multi-user.target

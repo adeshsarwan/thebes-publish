@@ -30,7 +30,7 @@ def _print(obj) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="pipeline", description="Finance Hub ingest + AI drafting pipeline")
+    ap = argparse.ArgumentParser(prog="pipeline", description="Story Hub ingest + AI drafting pipeline")
     ap.add_argument("--mock", action="store_true", help="use the offline mock LLM")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Set ADMIN_DATABASE_URL (e.g. postgresql://localhost/storyhub) or pass --admin-url", file=sys.stderr)
             return 2
         urls = setup(admin_url, write_env=args.write_env)
-        print("Schemas pipeline, newsroom, site are ready. Roles: fh_pipeline, fh_newsroom, fh_site.")
+        print("Schemas pipeline, newsroom, site are ready. Roles: story_pipeline, story_newsroom, story_site.")
         if args.write_env:
             print("Connection URLs written to .env:", ", ".join(urls))
         return 0

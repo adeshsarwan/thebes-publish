@@ -1,4 +1,4 @@
--- Finance Hub database: one PostgreSQL database, three schemas.
+-- Story Hub database: one PostgreSQL database, three schemas.
 --
 --   pipeline  — ingest, clustering, desk scoring (written by the Python pipeline)
 --   newsroom  — stories, revisions, workflow, staff (the editorial desk)
@@ -6,9 +6,9 @@
 --               (the ONLY schema the public website can read)
 --
 -- Access is enforced with one database role per system (see pipeline/dbsetup.py):
---   fh_pipeline : read/write pipeline; may create AI drafts in newsroom
---   fh_newsroom : read pipeline; read/write newsroom; write site (publish)
---   fh_site     : read-only on site
+--   story_pipeline : read/write pipeline; may create AI drafts in newsroom
+--   story_newsroom : read pipeline; read/write newsroom; write site (publish)
+--   story_site     : read-only on site
 --
 -- Apply with:  python -m pipeline.cli db-setup   (uses ADMIN_DATABASE_URL)
 -- Statements are idempotent, so re-running is safe.

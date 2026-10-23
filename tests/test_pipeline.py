@@ -77,7 +77,7 @@ class Base(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp(prefix="finhub-"))
+        cls.tmp = Path(tempfile.mkdtemp(prefix="storyhub-"))
         cfg = cls.tmp / "config"
         shutil.copytree(ROOT / "config", cfg)
         files = write_fixtures(cls.tmp)
@@ -434,7 +434,7 @@ class PostgresRolesTest(Base):
             self.addCleanup(d.close)
             return d
 
-        site, pipe, news = as_role("fh_site"), as_role("fh_pipeline"), as_role("fh_newsroom")
+        site, pipe, news = as_role("story_site"), as_role("story_pipeline"), as_role("story_newsroom")
         # site: read published stories, nothing else
         self.assertEqual(len(site.fetchall("select * from site.published_stories")), 1)
         for sql in ("select * from newsroom.stories", "select * from pipeline.raw_items",
