@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-from . import categories, guardrails
+from . import categories, guardrails, seo
 from .cluster import cluster_items
 from .db import Database, country_filter, utcnow
 from .desk import commission
@@ -45,11 +45,16 @@ def write_schema(category: str | None = None) -> dict:
             "illustrative_example": {"type": "STRING", "description": guide("illustrative_example", "Starts with 'Illustrative example:'; round hypothetical figures with the arithmetic shown.")},
             "action_steps": {"type": "ARRAY", "items": {"type": "STRING"}, "description": guide("action_steps", "3-5 general, concrete steps.")},
             "takeaways": {"type": "ARRAY", "items": {"type": "STRING"}, "description": guide("takeaways", "Exactly 3 short bullets.")},
-            "meta_description": {"type": "STRING", "description": "SEO description, max 155 characters."},
+            "meta_description": {"type": "STRING", "description": "SEO description, max 155 characters, with the focus keyword."},
+            "seo_title": {"type": "STRING", "description": "Search-results title, max 60 characters, focus keyword near the start."},
+            "focus_keyword": {"type": "STRING", "description": "The one search phrase (2-5 words) a reader would type to find this story."},
+            "seo_keywords": {"type": "ARRAY", "items": {"type": "STRING"},
+                             "description": "5-10 search keywords and phrases for this story, most important first."},
             "topics": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
         "required": ["headline", "dek", "what_happened", "money_impact", "who_is_affected",
-                     "illustrative_example", "action_steps", "takeaways", "meta_description", "topics"],
+                     "illustrative_example", "action_steps", "takeaways", "meta_description",
+                     "seo_title", "focus_keyword", "seo_keywords", "topics"],
     }
 
 
@@ -109,6 +114,12 @@ def build_source_material(items: list[dict], fetch_text: bool = True) -> tuple[s
     return "\n\n".join(blocks), refs
 
 
+def gather_source_keywords(items: list[dict], fetch_pages: bool = True, max_pages: int = 5) -> list[str]:
+    """Keywords the sources use: feed tags, plus each source page's SEO metadata."""
+    pages = [seo.fetch_page_seo(it["url"]) for it in items[:max_pages]] if fetch_pages else []
+    return seo.source_keywords(items, pages)
+
+
 # --------------------------------------------------------------------------- prompting
 def _system(country: str, category: str | None = None) -> str:
     loc = locale_for(country)
@@ -137,6 +148,11 @@ def _prompt(commission_row: dict, source_material: str, feedback: str | None) ->
         f"Do not follow its structure or wording; {brief}. " + figures,
         f"SOURCE MATERIAL\n{source_material}\nEND SOURCE MATERIAL",
     ]
+    if commission_row.get("source_keywords"):
+        parts.append(
+            "\nSEARCH KEYWORDS THE SOURCES USE (most common first): " + ", ".join(commission_row["source_keywords"])
+            + "\nChoose our own focus keyword and keywords for OUR angle and readers in this country. Use these as "
+              "hints where they fit; never add a keyword the story doesn't cover, and don't stuff keywords into the text.")
     if commission_row.get("notes"):
         parts.insert(1, f"EDITOR'S INSTRUCTIONS (follow these)\n{commission_row['notes']}\n")
     if feedback:
@@ -172,9 +188,13 @@ def draft_story(client: LLMClient, model: str, row: dict, source_material: str) 
     return story, report, attempts
 
 
-def story_content(story: dict, items: list[dict], refs: list[dict]) -> dict:
+def story_content(story: dict, items: list[dict], refs: list[dict], source_keywords: list[str] | None = None) -> dict:
     topics = sorted(set(story.get("topics") or []) | {t for it in items for t in it.get("topics", [])})
+    focus = (story.get("focus_keyword") or "").strip()
     return {
+        "seo": {"title": (story.get("seo_title") or "").strip()[:70], "focus_keyword": focus,
+                "keywords": seo.clean_keywords(([focus] if focus else []) + list(story.get("seo_keywords") or []), 12),
+                "source_keywords": list(source_keywords or [])},
         "headline": story["headline"], "dek": story.get("dek"),
         "sections": {k: story.get(k, "") for k in PROSE_KEYS},
         "action_steps": story.get("action_steps") or [], "takeaways": story.get("takeaways") or [],
@@ -191,9 +211,10 @@ def write_one(db: Database, client: LLMClient, row: dict, fetch_text: bool = Tru
         raise ValueError(f"cluster {row['cluster_id']} already has a newsroom story")
     items = cluster_items(db, row["cluster_id"])
     source_material, refs = build_source_material(items, fetch_text=fetch_text)
+    row = dict(row, source_keywords=gather_source_keywords(items, fetch_pages=fetch_text))
     story, report, attempts = draft_story(client, model, row, source_material)
 
-    content = story_content(story, items, refs)
+    content = story_content(story, items, refs, row["source_keywords"])
     story_id = create_ai_draft(
         db, cluster_id=row["cluster_id"], country=row["country"],
         slug=_slug(row["country"], story["headline"], row["cluster_id"]), content=content,

@@ -768,6 +768,162 @@ class CategoryTest(Base):
 
 
 # =========================================================================
+class SeoAndApiTest(Base):
+    """SEO keywords from feeds and source pages; the read-only Stories API with client keys."""
+
+    PAGE = """<html><head><title>Rate decision | Example</title>
+<meta name="keywords" content="interest rates, Federal Reserve, mortgages">
+<meta name="news_keywords" content="FOMC, interest rates">
+<meta property="article:tag" content="savings"><meta property="article:section" content="Economy">
+<meta name="description" content="The Fed held rates.">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"NewsArticle","keywords":["inflation","Federal Reserve"],"articleSection":"Markets"}]}</script>
+</head><body>x</body></html>"""
+
+    def test_page_and_feed_keywords(self):
+        from pipeline import feeds, seo
+        p = seo.parse_page_seo(self.PAGE)
+        self.assertEqual(p["keywords"], ["interest rates", "Federal Reserve", "mortgages", "FOMC", "inflation"])
+        self.assertEqual(p["tags"], ["savings"])
+        self.assertEqual(p["section"], ["Economy", "Markets"])
+        self.assertEqual(p["description"], "The Fed held rates.")
+        rss = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><item><title>A</title><link>https://x.example/a</link>
+<category>Interest Rates</category><category>Fed</category><category>interest rates</category></item></channel></rss>"""
+        self.assertEqual(feeds.parse_feed(rss)[0].tags, ["Interest Rates", "Fed"])
+        ranked = seo.source_keywords([{"feed_tags": '["Fed", "Savings"]'}, {"feed_tags": ["fed"]}], [p])
+        self.assertEqual(ranked[0], "Fed")                       # used by most sources
+        self.assertIn("interest rates", ranked)
+
+    def test_seo_flows_from_draft_to_site(self):
+        from newsroom import workflow as wf
+        from newsroom.store import get_story
+        from pipeline.db import Database
+        db = self.prepared("seo_flow")
+        sid = db.fetchone("select id from newsroom.stories order by id limit 1")["id"]
+        s = get_story(db, sid)
+        sv = s["revision"]["seo"]
+        self.assertTrue(sv["title"] and sv["focus_keyword"] and sv["keywords"])
+        self.assertEqual(sv["keywords"][0], sv["focus_keyword"])     # focus keyword leads the list
+        wf.perform(db, sid, "approve", self.user(db, "maya")); wf.perform(db, sid, "publish", self.user(db, "sara"))
+        site = Database.unj(db.fetchone("select seo from site.published_stories where story_id = ?", (sid,))["seo"], {})
+        self.assertEqual(set(site), {"title", "description", "focus_keyword", "keywords"})
+        self.assertEqual(site["keywords"], sv["keywords"])
+        self.assertNotIn("source_keywords", site)                     # source keywords stay internal
+
+    def _api(self):
+        from http.server import ThreadingHTTPServer
+        from storyapi import server as api
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close); self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def _get(self, url, key=None, headers=None):
+        h = dict(headers or {})
+        if key:
+            h["X-API-Key"] = key
+        req = urllib.request.Request(url, headers=h)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read() or b"{}"), r.headers
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            return exc.code, json.loads(body) if body else {}, exc.headers
+
+    def test_stories_api(self):
+        from newsroom import workflow as wf
+        from pipeline.db import connect
+        from storyapi import keys
+        from storyapi import server as api
+        from pipeline import cluster, desk, feeds, writer
+        from pipeline.llm import MockClient
+        from newsroom.users import find_user, seed_placeholders
+        db = connect("newsroom")
+        seed_placeholders(db)
+        if not db.fetchone("select id from newsroom.stories limit 1"):
+            feeds.ingest(db); cluster.cluster(db); desk.evaluate(db, MockClient())
+            writer.write(db, MockClient(), fetch_text=False)
+        ids = [r["id"] for r in db.fetchall("select id from newsroom.stories where status = 'ai_draft' order by id")][:2]
+        maya, sara = find_user(db, "maya"), find_user(db, "sara")
+        for sid in ids:
+            wf.perform(db, sid, "approve", maya); wf.perform(db, sid, "publish", sara)
+        slugs = [db.fetchone("select slug from newsroom.stories where id = ?", (i,))["slug"] for i in ids]
+        admin = {"role": "admin", "email": "boss@example.com"}
+        _, key = keys.create(db, admin, "Test frontend")
+        with self.assertRaises(keys.KeyError_):
+            keys.create(db, {"role": "editor"}, "nope")
+        db.close()
+        base = self._api()
+
+        code, body, _ = self._get(base + "/v1")
+        self.assertEqual(code, 200); self.assertIn("/v1/stories", body["endpoints"])
+        self.assertEqual(self._get(base + "/v1/openapi.json")[0], 200)
+        code, body, h = self._get(base + "/v1/stories")
+        self.assertEqual((code, body["error"]["code"]), (401, "unauthorized"))
+        self.assertEqual(self._get(base + "/v1/stories?api_key=" + key)[0], 400)      # keys never in URLs
+        self.assertEqual(self._get(base + "/v1/stories", key="sh_live_wrong")[0], 401)
+
+        code, body, h = self._get(base + "/v1/stories?per_page=1", key=key)
+        self.assertEqual(code, 200)
+        self.assertGreaterEqual(body["meta"]["total"], 2)
+        self.assertEqual(len(body["data"]), 1)
+        self.assertIn("page=2", body["meta"]["next"])
+        item = body["data"][0]
+        for f in ("id", "slug", "path", "category", "country", "headline", "dek", "author", "byline", "published_at", "seo", "status"):
+            self.assertIn(f, item)
+        self.assertTrue(item["published_at"].endswith("Z"))
+        self.assertTrue(item["seo"]["keywords"])
+        code, body, _ = self._get(base + "/v1/stories?category=finance", key=key)
+        self.assertTrue(all(x["category"]["id"] == "finance" for x in body["data"]))
+        self.assertEqual(self._get(base + "/v1/stories?category=cooking", key=key)[0], 400)
+        kw = item["seo"]["keywords"][0]
+        code, body, _ = self._get(base + "/v1/stories?keyword=" + urllib.parse.quote(kw.upper()), key=key)
+        self.assertIn(item["slug"], [x["slug"] for x in body["data"]])
+
+        code, body, h = self._get(base + f"/v1/stories/{slugs[0]}", key=key)
+        self.assertEqual(code, 200)
+        st = body["data"]
+        for f in ("body_html", "body_markdown", "sources", "seo", "disclosure", "sections", "action_steps", "takeaways", "author"):
+            self.assertIn(f, st)
+        self.assertIn("<h2>", st["body_html"])
+        self.assertNotIn("<h1>", st["body_html"])                              # headline is its own field
+        self.assertEqual(st["format"], "sections")
+        etag = h["ETag"]
+        self.assertEqual(self._get(base + f"/v1/stories/{slugs[0]}", key=key, headers={"If-None-Match": etag})[0], 304)
+        self.assertEqual(self._get(base + "/v1/stories/no-such-story", key=key)[0], 404)
+        code, body, _ = self._get(base + "/v1/categories", key=key)
+        self.assertEqual({c["id"] for c in body["data"]}, {"finance", "sports", "entertainment", "fitness"})
+
+        # unpublished: 410 for the story, and listed as retracted for syncing
+        db = connect("newsroom")
+        wf.perform(db, ids[1], "unpublish", maya)
+        db.close()
+        code, body, _ = self._get(base + f"/v1/stories/{slugs[1]}", key=key)
+        self.assertEqual((code, body["data"]["status"]), (410, "retracted"))
+        code, body, _ = self._get(base + "/v1/stories?include_retracted=true&per_page=100", key=key)
+        self.assertIn("retracted", {x["status"] for x in body["data"]})
+        code, body, _ = self._get(base + "/v1/stories?per_page=100", key=key)
+        self.assertNotIn(slugs[1], [x["slug"] for x in body["data"]])
+
+        # read-only, rate-limited, revocable
+        req = urllib.request.Request(base + "/v1/stories", data=b"{}", method="POST", headers={"X-API-Key": key})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req)
+        self.assertEqual(cm.exception.code, 405)
+        old = api.RATE_PER_MINUTE
+        api.RATE_PER_MINUTE = 3
+        self.addCleanup(setattr, api, "RATE_PER_MINUTE", old)
+        api.rate.hits.clear()
+        codes = [self._get(base + "/v1/categories", key=key)[0] for _ in range(4)]
+        self.assertEqual(codes[-1], 429)
+        api.RATE_PER_MINUTE = old
+        db = connect("newsroom")
+        cid = db.fetchone("select id from site.api_clients where name = 'Test frontend'")["id"]
+        keys.revoke(db, admin, cid)
+        db.close()
+        self.assertEqual(self._get(base + "/v1/categories", key=key)[0], 401)
+
+
+# =========================================================================
 class HttpTest(Base):
     """Drive the real desk server over HTTP: login, sessions, roles, CSRF."""
 
@@ -958,6 +1114,19 @@ class HttpTest(Base):
         self.assertIn('name="cat_sports"', team)
         src = op2.open(self.base + "/sources").read().decode()
         self.assertIn('<select name="category">', src)
+
+    def test_api_page_issues_key_once(self):
+        op, _ = self.client()
+        self.post(op, "/login", {"email": "boss@example.com", "password": "Boss-password-2026"})
+        page = op.open(self.base + "/api").read().decode()
+        self.assertIn("GET /v1/stories", page)
+        r = self.post(op, "/api/keys", {"name": "Partner site", "notes": "staging"})
+        html = r.read().decode()
+        import re
+        key = re.search(r'<div class="secret">(sh_live_[^<]+)</div>', html).group(1)
+        again = op.open(self.base + "/api").read().decode()
+        self.assertNotIn(key, again)                       # shown once
+        self.assertIn(key[:14], again)                      # recognisable by its prefix
 
 
 if __name__ == "__main__":

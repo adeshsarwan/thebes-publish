@@ -157,3 +157,14 @@ Stories come in categories: **Finance, Sports, Entertainment, Fitness & health**
 - **Staff:** admins tick the categories each person works on (Team page). People only see and act on stories in their categories. Nothing ticked means all categories, and admins always see everything.
 - **Moving a story:** editors can move a story to another category from the story page.
 - **Adding a category:** add a block to `categories.yaml` with its desk, writer, guardrails and disclosure, then add feeds for it.
+
+## Stories API and SEO
+
+- **Stories API:** `python -m storyapi serve` is a read-only JSON API over the `site` schema for website developers. Each developer gets their own key, created on the desk's API page.
+- **SEO:**
+  - Feed tags (RSS `<category>`) and each source page's SEO metadata (`keywords`, `news_keywords`, `article:tag`, JSON-LD) are gathered for every story.
+  - The AI writer turns them into our own search title, focus keyword and keywords.
+  - Editors adjust these in the editor's SEO panel.
+  - Published stories carry them in `site.published_stories.seo`, and the API returns them too.
+
+See `deploy/README.md` for running the API on the server.

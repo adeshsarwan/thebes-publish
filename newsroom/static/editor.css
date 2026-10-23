@@ -73,3 +73,5 @@ main.wide{max-width:none;padding:0}
 
 @media (max-width:980px){.ed-wrap{grid-template-columns:1fr}.ed-side{border-left:0;border-top:1px solid var(--line)}
   .ed-canvas{padding:22px 26px 60px}.ed-title{font-size:30px}.blk-plus{left:-20px}}
+.kw-list{display:flex;flex-wrap:wrap;gap:4px}.kw-add{font:12px var(--sans);border:1px dashed var(--line);background:none;color:var(--ink);border-radius:999px;padding:2px 8px;cursor:pointer}
+.kw-add:disabled{opacity:.45;cursor:default}

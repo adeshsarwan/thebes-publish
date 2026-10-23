@@ -22,7 +22,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
-from pipeline import categories
+from pipeline import categories, seo
 from pipeline.cluster import cluster_items
 from pipeline.db import Database, connect
 from pipeline.settings import COUNTRY_NAMES, get_settings
@@ -198,7 +198,7 @@ article{padding:22px 18px;font-size:17px}article h1{font-size:26px}.card{grid-te
 def page(title: str, active: str, body: str, user: dict | None, flash: tuple[str, str] | None = None,
          refresh: int | None = None, wide: bool = False) -> str:
     links = [("queue", "/", "Stories"), ("scoring", "/scoring", "Scoring desk"), ("sources", "/sources", "Sources & pulls"),
-             ("site", "/site", "Site feed"), ("team", "/team", "Team")]
+             ("site", "/site", "Site feed"), ("api", "/api", "API"), ("team", "/team", "Team")]
     nav = "".join(f'<a href="{href}" class="{"on" if key == active else ""}">{e(label)}</a>' for key, href, label in links) if user else ""
     who = ""
     if user:
@@ -508,8 +508,23 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
 {banner}<div class="layout"><div>{article_html(rev)}{research_html}{origin_timeline(db, story)}</div>
 <aside>{actions_html}<div class="box"><h3>Story</h3><div class="kv">{info}</div>{move_category_form(story, actor)}</div>
 <div class="box"><h3>Guardrails · v{rev['version']}</h3>{issues_html}<div class="kv" style="margin-top:10px">{kv}</div></div>
-{desk}<div class="box"><h3>Recent activity</h3><div class="timeline">{tl}</div></div></aside></div>"""
+{seo_box(rev.get("seo"), rev.get("meta_description"), rev["headline"])}{desk}<div class="box"><h3>Recent activity</h3><div class="timeline">{tl}</div></div></aside></div>"""
     return rev["headline"], body
+
+
+def seo_box(rev_seo, meta_description: str | None, headline: str = "") -> str:
+    """Search-engine fields for a story: what the website gets, plus the sources' keywords."""
+    sv = seo.seo_view(rev_seo)
+    pills = "".join(f'<span class="flag">{e(k)}</span>' for k in sv["keywords"]) or '<span class="meta">none yet</span>'
+    src = "".join(f'<span class="flag">{e(k)}</span>' for k in sv["source_keywords"])
+    title = sv["title"] or headline
+    return (f'<div class="box"><h3>SEO</h3><div class="kv"><span>Search title</span><b>{e(title)}</b>'
+            f'<span>Focus keyword</span><b>{e(sv["focus_keyword"]) or "–"}</b></div>'
+            f'<p class="meta" style="margin:10px 0 4px">Keywords</p>{pills}'
+            f'<p class="meta" style="margin:10px 0 4px">Meta description ({len(meta_description or "")} chars)</p>'
+            f'<div style="font-size:13px">{e(meta_description or "–")}</div>'
+            + (f'<p class="meta" style="margin:10px 0 4px">Keywords the sources use</p>{src}' if src else "")
+            + '</div>')
 
 
 def move_category_form(story: dict, actor: dict | None) -> str:
@@ -587,6 +602,12 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     ))
     srcs = "".join(f'<li><a href="{e(x["url"])}" target="_blank" rel="noopener">{e(x.get("title") or x["url"])}</a> · {e(x.get("name") or "")}</li>'
                    for x in rev["sources"]) or "<li>None</li>"
+    sv = seo.seo_view(rev.get("seo"))
+    source_kw_html = ""
+    if sv["source_keywords"]:
+        chips = "".join(f'<button type="button" class="kw-add" data-kw="{e(k)}" title="Add to keywords">+ {e(k)}</button>'
+                        for k in sv["source_keywords"])
+        source_kw_html = f'<p class="meta" style="margin:10px 0 4px">Keywords the sources use (click to add):</p><div class="kw-list">{chips}</div>'
     g = rev.get("guardrails") or {}
     issues = "".join(f'<div class="issue {e(i["severity"])}">{e(i["detail"])}</div>' for i in g.get("issues", [])) or (
         '<div class="okbox">Passed every check</div>' if g else '<div class="meta">Not checked yet</div>')
@@ -604,8 +625,16 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <section><h3>Story</h3><div class="kv">{status_kv}</div><p style="margin:10px 0 0"><a href="/story/{story_id}">Story page &amp; actions</a> · <a href="/story/{story_id}/history">History</a></p></section>
 <section><h3>What did you change?</h3><input type="text" form="editform" name="note" placeholder="Saved with this version, e.g. Tightened the intro"></section>
 {correction}
-<section><h3>Search &amp; sharing <span id="ed-meta-count" class="ed-count"></span></h3>
-<textarea form="editform" name="meta_description" rows="3" placeholder="About 155 characters for search results">{e(rev.get('meta_description') or '')}</textarea></section>
+<section><h3>SEO</h3>
+<label class="meta">Search title <span id="ed-title-count" class="ed-count"></span></label>
+<input type="text" form="editform" name="seo_title" maxlength="80" value="{e(sv['title'])}" placeholder="About 60 characters, focus keyword first">
+<label class="meta" style="display:block;margin-top:8px">Focus keyword</label>
+<input type="text" form="editform" name="focus_keyword" value="{e(sv['focus_keyword'])}" placeholder="What a reader would search for">
+<label class="meta" style="display:block;margin-top:8px">Keywords <span class="ed-count">comma-separated</span></label>
+<textarea form="editform" name="seo_keywords" rows="3" placeholder="e.g. mortgage rates, savings accounts">{e(", ".join(sv['keywords']))}</textarea>
+<label class="meta" style="display:block;margin-top:8px">Meta description <span id="ed-meta-count" class="ed-count"></span></label>
+<textarea form="editform" name="meta_description" rows="3" placeholder="About 155 characters for search results">{e(rev.get('meta_description') or '')}</textarea>
+{source_kw_html}</section>
 <section><h3>Sources</h3><ul>{srcs}</ul><p class="meta">Listed at the end of the story.</p></section>
 <section><h3>Checks on v{rev['version']}</h3>{issues}<p class="meta">Re-run when you save.</p></section>
 {research}
@@ -1032,7 +1061,10 @@ def _site_desk(db: Database, user: dict, site_row: dict, art: str) -> str | None
          + (" " + PICK_PILL if story.get("origin") == "editor_pick" else "")),
         ("Newsroom version", f'v{story["current_version"]}'),
     ))
+    site_seo = Database.unj(site_row.get("seo"), None) or {}
     aside = (actions_box(db, story, user, here=here)
+             + seo_box({"title": site_seo.get("title"), "focus_keyword": site_seo.get("focus_keyword"),
+                        "keywords": site_seo.get("keywords")}, site_seo.get("description") or site_row.get("meta_description"))
              + f'<div class="box"><h3>Story</h3><div class="kv">{info}</div>'
                f'<p style="margin:12px 0 0"><a href="/story/{story["id"]}">Open in the newsroom</a> · '
                f'<a href="/story/{story["id"]}/history">All versions</a></p></div>')
@@ -1122,6 +1154,57 @@ def team_page(db: Database, user: dict, issued: dict | None = None) -> tuple[str
             f'stories in their categories.</p>{note}{secret}{add}'
             f'<table><tr><th>Person</th><th>Role</th><th>Email</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
     return "Team", body
+
+
+# --------------------------------------------------------------------------- Stories API (docs + keys)
+def api_page(db: Database, user: dict, issued: dict | None = None, error: str | None = None) -> tuple[str, str]:
+    from storyapi import keys as api_keys
+    from storyapi.server import RATE_PER_MINUTE, public_base
+    base = public_base() or "https://storyhub-api.thebesads.com"
+    is_admin = user["role"] == "admin"
+    secret = ""
+    if issued:
+        secret = (f'<div class="panel"><h2>Key for {e(issued["name"])}</h2><p>Copy it now and send it to the developer '
+                  'securely. It is shown only once; if it is lost, revoke it and create another.</p>'
+                  f'<div class="secret">{e(issued["key"])}</div></div>')
+    err = f'<div class="flash err">{e(error)}</div>' if error else ""
+    rows = []
+    for c in api_keys.list_clients(db):
+        state = (f'<span class="pill s-killed">Revoked {when(c["revoked_at"])}</span>' if c["revoked_at"]
+                 else '<span class="pill s-approved">Active</span>')
+        action = ""
+        if is_admin and not c["revoked_at"]:
+            action = (f'<form class="inline" method="post" action="/api/keys/{c["id"]}/revoke">'
+                      '<button class="danger">Revoke</button></form>')
+        rows.append(f'<tr><td><b>{e(c["name"])}</b><br><span class="meta">{e(c.get("notes") or "")}</span></td>'
+                    f'<td><code>{e(c["key_prefix"])}…</code></td><td>{when(c["created_at"])}<br><span class="meta">{e(c.get("created_by") or "")}</span></td>'
+                    f'<td>{state}</td><td>{action}</td></tr>')
+    create = ""
+    if is_admin:
+        create = ('<div class="panel"><h2>Create a key</h2><form class="form" method="post" action="/api/keys">'
+                  '<div class="grid2"><div><label>Who it\'s for</label><input type="text" name="name" required placeholder="e.g. Acme frontend (production)"></div>'
+                  '<div><label>Notes (optional)</label><input type="text" name="notes" placeholder="contact, site, expiry"></div></div>'
+                  '<p><button class="primary">Create key</button> <span class="meta">One key per site or developer, so you can '
+                  'revoke one without affecting the others.</span></p></form></div>')
+    cats = ", ".join(f"<code>{e(c)}</code>" for c in categories.ids())
+    docs = f"""<div class="panel"><h2>For developers</h2>
+<p>Base address: <code>{e(base)}</code> · Description for tools: <a href="{e(base)}/v1/openapi.json" target="_blank" rel="noopener"><code>/v1/openapi.json</code></a></p>
+<p>Send the key in a header on every request: <code>X-API-Key: sh_live_…</code> (or <code>Authorization: Bearer sh_live_…</code>). Keep it on your server, not in browser code.</p>
+<table><tr><th>Request</th><th>What you get</th></tr>
+<tr><td><code>GET /v1/stories</code></td><td>Published stories, newest first: id, slug, path, category, country, headline, standfirst, author, byline, published and updated times, SEO.
+Filters: <code>category</code> ({cats}), <code>country</code> (US, UK, CA, AU), <code>since</code>, <code>updated_since</code>, <code>keyword</code>, <code>include_retracted=true</code>. Paging: <code>page</code>, <code>per_page</code> (max 100).</td></tr>
+<tr><td><code>GET /v1/stories/&lbrace;slug&rbrace;</code></td><td>One story: <code>body_html</code> (ready to show), <code>body_markdown</code>, <code>blocks</code> (stories edited in the block editor) or <code>sections</code>, action steps, takeaways, sources, topics,
+SEO (<code>title</code>, <code>description</code>, <code>focus_keyword</code>, <code>keywords</code>), author, byline, correction note and the <code>disclosure</code> to print under it. An unpublished story answers <b>410 Gone</b>: remove it.</td></tr>
+<tr><td><code>GET /v1/categories</code></td><td>Categories and how many live stories each has.</td></tr></table>
+<p style="margin-top:12px"><b>Keeping a site in sync:</b> every few minutes, call <code>/v1/stories?updated_since=&lt;last check&gt;&amp;include_retracted=true</code>,
+fetch any story whose <code>updated_at</code> changed, and delete any with <code>status: "retracted"</code>.</p>
+<pre class="diff">curl -H "X-API-Key: sh_live_…" "{e(base)}/v1/stories?category=sports&amp;per_page=10"</pre>
+<p class="meta">Limits: {RATE_PER_MINUTE} requests a minute per key. Responses carry an ETag; send it back as If-None-Match to get a quick 304 when nothing changed.</p></div>"""
+    body = (f'<h1 class="page">Stories API</h1><p class="sub">Read-only access to published stories for website developers. '
+            f'It serves exactly what is on the Site feed, and nothing from the newsroom.</p>{err}{secret}{create}'
+            f'<h3>Keys</h3><table><tr><th>For</th><th>Key</th><th>Created</th><th>Status</th><th></th></tr>{"".join(rows)}</table>'
+            + ('' if rows else '<div class="empty">No keys yet.</div>') + docs)
+    return "Stories API", body
 
 
 # --------------------------------------------------------------------------- sources & pulls
@@ -1375,6 +1458,8 @@ class Handler(BaseHTTPRequestHandler):
                                     refresh=10 if pull_mod.is_running() else None)
             if path == "/team":
                 return self._render(db, user, team_page(db, user), "team", q)
+            if path == "/api":
+                return self._render(db, user, api_page(db, user), "api", q)
             if path == "/account":
                 return self._render(db, user, account_page(user, first=bool(q.get("first"))), "account", q)
             if path == "/site" or path.startswith("/site/"):
@@ -1438,6 +1523,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not story:
                     return self._send(404, "not found", "text/plain")
                 rev = story["revision"]
+                old_seo = seo.seo_view(rev.get("seo"))
+                kws = [k for k in (form.get("seo_keywords") or "").split(",")]
+                focus = form.get("focus_keyword", old_seo["focus_keyword"]).strip()
+                story_seo = {"title": form.get("seo_title", old_seo["title"]).strip()[:80], "focus_keyword": focus,
+                             "keywords": seo.clean_keywords(([focus] if focus else []) + kws, 15)
+                             if "seo_keywords" in form else old_seo["keywords"],
+                             "source_keywords": old_seo["source_keywords"]}
                 if "blocks" in form:   # block editor
                     try:
                         body_blocks = blk.clean_blocks(form.get("blocks") or "[]")
@@ -1446,7 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
                     content = {
                         "headline": form.get("headline", "").strip(), "dek": form.get("dek", "").strip(),
                         "blocks": body_blocks, "meta_description": form.get("meta_description", "").strip(),
-                        "topics": rev["topics"], "sources": rev["sources"],
+                        "topics": rev["topics"], "sources": rev["sources"], "seo": story_seo,
                     }
                 else:                  # fixed-section form (CLI and older clients)
                     content = {
@@ -1454,7 +1546,7 @@ class Handler(BaseHTTPRequestHandler):
                         "sections": {k: form.get(k, "").strip() for k in PROSE_KEYS},
                         "action_steps": _lines(form.get("action_steps", "")), "takeaways": _lines(form.get("takeaways", "")),
                         "meta_description": form.get("meta_description", "").strip(),
-                        "topics": rev["topics"], "sources": rev["sources"],
+                        "topics": rev["topics"], "sources": rev["sources"], "seo": story_seo,
                     }
                 try:
                     report = wf.save_revision(db, sid, user, content, note=form.get("note") or None)
@@ -1488,6 +1580,23 @@ class Handler(BaseHTTPRequestHandler):
                 if nxt.startswith("/site/") and not errs and story.get("live"):
                     msg += " Readers still see the published version until this is approved and republished."
                 return self._redirect(f"/story/{sid}?{'err' if errs else 'ok'}={quote(msg)}")
+
+            if path == "/api/keys":
+                from storyapi import keys as api_keys
+                try:
+                    row, key = api_keys.create(db, user, form.get("name", ""), form.get("notes", ""))
+                except api_keys.KeyError_ as exc:
+                    db.rollback()
+                    return self._send(200, page("Stories API", "api", api_page(db, user, error=str(exc))[1], user))
+                return self._send(200, page("Stories API", "api", api_page(db, user, issued={"name": row["name"], "key": key})[1], user))
+            if m := re.fullmatch(r"/api/keys/(\d+)/revoke", path):
+                from storyapi import keys as api_keys
+                try:
+                    api_keys.revoke(db, user, int(m.group(1)))
+                except api_keys.KeyError_ as exc:
+                    db.rollback()
+                    return self._redirect(f"/api?err={quote(str(exc))}")
+                return self._redirect(f"/api?ok={quote('Key revoked. Requests with it are refused from now on.')}")
 
             if m := re.fullmatch(r"/story/(\d+)/category", path):
                 sid = int(m.group(1))

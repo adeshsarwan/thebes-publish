@@ -26,8 +26,16 @@ echo "== Database changes and grants"
 as_app .venv/bin/python -m pipeline.cli db-setup --write-env
 echo "== Restarting the desk"
 systemctl restart story-hub-desk
+if systemctl list-unit-files story-hub-api.service >/dev/null 2>&1 && [ -f /etc/systemd/system/story-hub-api.service ]; then
+  systemctl restart story-hub-api
+fi
 sleep 1
 curl -fsS -o /dev/null -w "desk answers HTTP %{http_code}\n" http://127.0.0.1:8765/login
+if [ -f /etc/systemd/system/story-hub-api.service ]; then
+  curl -fsS -o /dev/null -w "Stories API answers HTTP %{http_code}\n" http://127.0.0.1:8767/v1
+else
+  echo "Note: the Stories API isn't installed yet. Run: sudo bash $APP_DIR/deploy/setup_vps.sh --letsencrypt you@example.com"
+fi
 if ! cmp -s deploy/update.sh /usr/local/sbin/story-hub-update; then
   echo "Note: deploy/update.sh changed in the repo. Refresh the installed copy with: sudo bash $APP_DIR/deploy/setup_vps.sh"
 fi

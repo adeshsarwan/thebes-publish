@@ -1,0 +1,23 @@
+[Unit]
+Description=Story Hub Stories API (read-only, for website developers)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=storyhub
+Group=storyhub
+WorkingDirectory=/opt/story-hub
+# uses only SITE_DATABASE_URL (the read-only site login) from /opt/story-hub/.env
+ExecStart=/opt/story-hub/.venv/bin/python -m storyapi serve --port 8767
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/story-hub
+
+[Install]
+WantedBy=multi-user.target

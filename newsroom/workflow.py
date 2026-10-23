@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 
-from pipeline import categories, guardrails
+from pipeline import categories, guardrails, seo
 from pipeline.cluster import cluster_items
 from pipeline.db import Database, utcnow
 from pipeline.settings import get_settings
@@ -295,15 +295,15 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
     db.execute(
         """insert into site.published_stories
            (story_id, slug, country, category, headline, dek, sections, takeaways, action_steps, topics, sources,
-            meta_description, body_md, blocks, author_id, ai_assisted, human_reviewed, disclosure, version, status,
+            meta_description, body_md, blocks, seo, author_id, ai_assisted, human_reviewed, disclosure, version, status,
             correction_note, first_published_at, updated_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
            on conflict (story_id) do update set slug = excluded.slug, country = excluded.country,
              category = excluded.category,
              headline = excluded.headline, dek = excluded.dek, sections = excluded.sections,
              takeaways = excluded.takeaways, action_steps = excluded.action_steps, topics = excluded.topics,
              sources = excluded.sources, meta_description = excluded.meta_description, body_md = excluded.body_md,
-             blocks = excluded.blocks,
+             blocks = excluded.blocks, seo = excluded.seo,
              author_id = excluded.author_id, ai_assisted = excluded.ai_assisted,
              human_reviewed = excluded.human_reviewed, disclosure = excluded.disclosure,
              version = excluded.version, status = 'live', correction_note = excluded.correction_note,
@@ -311,9 +311,17 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
         (story["id"], story["slug"], story["country"], story.get("category") or categories.default(), content["headline"], content.get("dek"),
          db.j(content["sections"]), db.j(content["takeaways"]), db.j(content["action_steps"]),
          db.j(content["topics"]), db.j(content["sources"]), content.get("meta_description"), rev["body_md"],
-         db.j(content["blocks"]) if content.get("blocks") else None, author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed, story.get("category")),
+         db.j(content["blocks"]) if content.get("blocks") else None, db.j(site_seo(content)), author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed, story.get("category")),
          story["current_version"], correction_note, now, now),
     )
+
+
+def site_seo(content: dict) -> dict:
+    """What the website gets for search engines (the editor's choices; source keywords stay internal)."""
+    sv = seo.seo_view(content.get("seo"))
+    return {"title": sv["title"] or (content.get("headline") or "")[:70],
+            "description": content.get("meta_description") or content.get("dek") or "",
+            "focus_keyword": sv["focus_keyword"], "keywords": sv["keywords"]}
 
 
 # --------------------------------------------------------------------------- auto-publish

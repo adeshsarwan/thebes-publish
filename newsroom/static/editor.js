@@ -569,9 +569,21 @@
   Array.prototype.forEach.call(document.querySelectorAll("[form=editform]"), function (n) { n.addEventListener("input", function () { markDirty(); countSide(); }); });
 
   function countSide() {
-    var md = document.querySelector("[name=meta_description][form=editform]"), c = document.getElementById("ed-meta-count");
-    if (md && c) { c.textContent = md.value.length + " / 155"; c.classList.toggle("out", md.value.length > 160); }
+    [["meta_description", "ed-meta-count", 155, 160], ["seo_title", "ed-title-count", 60, 65]].forEach(function (x) {
+      var f = document.querySelector("[name=" + x[0] + "][form=editform]"), c = document.getElementById(x[1]);
+      if (f && c) { c.textContent = f.value.length + " / " + x[2]; c.classList.toggle("out", f.value.length > x[3]); }
+    });
   }
+  // "Keywords the sources use": click to add one to our keywords
+  Array.prototype.forEach.call(document.querySelectorAll(".kw-add"), function (b) {
+    b.addEventListener("click", function () {
+      var box = document.querySelector("[name=seo_keywords][form=editform]"); if (!box) return;
+      var have = box.value.split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+      var kw = b.getAttribute("data-kw");
+      if (have.map(function (x) { return x.toLowerCase(); }).indexOf(kw.toLowerCase()) < 0) have.push(kw);
+      box.value = have.join(", "); b.disabled = true; markDirty();
+    });
+  });
 
   // start
   load({ headline: cfg.headline, dek: cfg.dek, blocks: cfg.blocks });

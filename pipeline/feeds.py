@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -20,7 +20,7 @@ import requests
 
 from .db import Database, utcnow
 from .settings import get_settings
-from . import categories
+from . import categories, seo
 from .taxonomy import tag_topics
 from .text import canonical_url, fingerprint, strip_html, title_key
 
@@ -43,6 +43,7 @@ class Entry:
     summary: str
     author: str | None
     published: datetime | None
+    tags: list = field(default_factory=list)     # the feed's own category/keyword tags (SEO signal)
 
 
 # --------------------------------------------------------------------------- dates
@@ -120,6 +121,8 @@ def _builtin_parse(body: bytes) -> list[Entry]:
         title = _child_text(el, "title") or ""
         summary = _child_text(el, "description", "summary", "encoded", "content") or ""
         published = _child_text(el, "pubdate", "published", "updated", "date", "issued")
+        tags = [(c.get("term") or c.text or "").strip() for c in el
+                if _local(c.tag) in ("category", "subject", "keywords")]
         out.append(
             Entry(
                 guid=_child_text(el, "guid", "id"),
@@ -128,6 +131,7 @@ def _builtin_parse(body: bytes) -> list[Entry]:
                 summary=strip_html(summary)[:MAX_SUMMARY_CHARS],
                 author=_child_text(el, "creator", "author", "name"),
                 published=parse_date(published),
+                tags=seo.clean_keywords(tags, 20),
             )
         )
     return out
@@ -155,6 +159,8 @@ def _feedparser_parse(body: bytes) -> list[Entry]:
                 summary=strip_html(summary)[:MAX_SUMMARY_CHARS],
                 author=e.get("author"),
                 published=published,
+                tags=seo.clean_keywords([t.get("term") for t in e.get("tags") or []]
+                                        + [e.get("media_keywords") or ""], 20),
             )
         )
     return out
@@ -260,14 +266,14 @@ def ingest(db: Database, only_country: str | None = None, only_source: str | Non
                 new_id = db.insert(
                     """insert into pipeline.raw_items
                        (source_id, country, guid, url, title, summary, author, published_at, fetched_at,
-                        fingerprint, title_key, topics, status, filter_reason)
-                       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        fingerprint, title_key, topics, feed_tags, status, filter_reason)
+                       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        on conflict (fingerprint) do nothing
                        returning id""",
                     (
                         src["id"], src["country"], e.guid, e.url, e.title, e.summary, e.author,
                         e.published.isoformat() if e.published else None, utcnow(),
-                        fp, title_key(e.title), db.j(topics),
+                        fp, title_key(e.title), db.j(topics), db.j(e.tags or []),
                         "filtered" if reason else "new", reason,
                     ),
                 )

@@ -65,6 +65,7 @@ create table if not exists pipeline.raw_items (
     fingerprint   text not null unique,
     title_key     text not null,
     topics        jsonb not null default '[]',
+    feed_tags     jsonb not null default '[]',    -- the feed's category/keyword tags (SEO signal)
     cluster_id    bigint references pipeline.story_clusters(id),
     status        text not null default 'new' check (status in ('new','filtered','clustered')),
     filter_reason text
@@ -201,6 +202,7 @@ create table if not exists newsroom.story_revisions (
     sources          jsonb not null default '[]',
     body_md          text not null,
     blocks           jsonb,                      -- set when a person edits in the block editor
+    seo              jsonb,                      -- {title, focus_keyword, keywords, source_keywords}
     word_count       integer,
     guardrails       jsonb,
     model            text,
@@ -251,6 +253,7 @@ create table if not exists site.published_stories (
     meta_description   text,
     body_md            text not null,
     blocks             jsonb,                       -- block body for stories edited by people; null for AI-format stories
+    seo                jsonb,                       -- {title, description, focus_keyword, keywords}
     author_id          bigint not null references site.authors(id),
     ai_assisted        boolean not null default true,
     human_reviewed     boolean not null default true,       -- false = published automatically, no editor review yet
@@ -287,3 +290,20 @@ alter table site.published_stories add column if not exists category text not nu
 create index if not exists stories_category on newsroom.stories (category, status);
 create index if not exists clusters_category on pipeline.story_clusters (category, status);
 create index if not exists site_category on site.published_stories (category, status);
+alter table pipeline.raw_items add column if not exists feed_tags jsonb not null default '[]';
+alter table newsroom.story_revisions add column if not exists seo jsonb;
+alter table site.published_stories add column if not exists seo jsonb;
+create index if not exists site_updated on site.published_stories (updated_at);
+
+-- Keys for the read-only Stories API (storyapi). Only a SHA-256 hash of each key is kept;
+-- the key itself is shown once, when an admin creates it on the desk's API page.
+create table if not exists site.api_clients (
+    id          bigserial primary key,
+    name        text not null,                 -- who it's for, e.g. "Acme frontend (staging)"
+    key_prefix  text not null,                 -- first characters, to recognise a key in lists
+    key_hash    text not null unique,
+    notes       text,
+    created_by  text,
+    created_at  timestamptz not null default now(),
+    revoked_at  timestamptz
+);

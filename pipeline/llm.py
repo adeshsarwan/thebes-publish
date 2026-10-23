@@ -238,6 +238,10 @@ class MockClient:
                 "Fixed-rate holders are protected until their deal ends.",
             ],
             "meta_description": "What the latest announcement means for borrowers, savers and household budgets.",
+            "seo_title": "Rates on hold: what it means for your budget",
+            "focus_keyword": (re.search(r"SEARCH KEYWORDS THE SOURCES USE \(most common first\): ([^,\n]+)", prompt).group(1)
+                              if "SEARCH KEYWORDS THE SOURCES USE" in prompt else "interest rates"),
+            "seo_keywords": ["interest rates", "household budget", "savings rates"],
             "topics": ["interest_rates"],
         }
 

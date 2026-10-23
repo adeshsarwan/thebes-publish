@@ -32,7 +32,7 @@ from pipeline.db import Database, connect, utcnow
 from pipeline.llm import LLMClient, get_client, model_name
 from pipeline.settings import COUNTRY_NAMES, ROOT, get_settings
 from pipeline.text import canonical_url
-from pipeline.writer import _slug, build_source_material, draft_story, story_content
+from pipeline.writer import _slug, build_source_material, draft_story, gather_source_keywords, story_content
 
 from .pull import LOG_DIR
 from .store import create_ai_draft, log_event
@@ -229,6 +229,7 @@ def _run(db: Database, req: dict, client: LLMClient, fetch_text: bool, resolve_l
         refs += [s for s in brief["sources"] if canonical_url(s["url"]) not in known]
 
     row = {"cluster_id": req["cluster_id"], "country": cluster["country"], "category": cluster.get("category"),
+           "source_keywords": gather_source_keywords(items, fetch_pages=fetch_text),
            "angle": req["angle"],
            "audience": Database.unj(req.get("audience"), []), "notes": req.get("notes")}
     model = model_name("writer", client)
@@ -242,7 +243,7 @@ def _run(db: Database, req: dict, client: LLMClient, fetch_text: bool, resolve_l
     story_id = create_ai_draft(
         db, cluster_id=req["cluster_id"], country=cluster["country"],
         slug=_slug(cluster["country"], story["headline"], req["cluster_id"]),
-        content=story_content(story, items, refs), guardrails=report.as_dict(), model=model,
+        content=story_content(story, items, refs, row["source_keywords"]), guardrails=report.as_dict(), model=model,
         impact_score=ev.get("impact_score"), angle=req["angle"], attempts=attempts,
         origin="editor_pick", picked_by=req["requested_by"], research=research_doc,
         category=cluster.get("category"))

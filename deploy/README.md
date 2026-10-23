@@ -16,6 +16,7 @@ Code is in the private GitHub repo **adeshsarwan/thebes-publish**. The server pu
 | Pull logs, locks, `tick.log` | `/var/lib/story-hub` |
 | Nightly database backups (14 days) | `/var/backups/story-hub` |
 | Desk service | `systemctl status story-hub-desk` |
+| Stories API service | `systemctl status story-hub-api` (logs: `journalctl -u story-hub-api`) |
 | Schedule and backup jobs | `/etc/cron.d/story-hub` |
 | nginx site | `/etc/nginx/sites-available/story-hub` |
 
@@ -105,6 +106,27 @@ Then restart the desk with `systemctl restart story-hub-desk`.
 - `sudo -u storyhub -H bash -c 'cd /opt/story-hub && .venv/bin/python -m newsroom schedule status'` lists the next noon slots.
 
 ---
+
+## Stories API (for website developers)
+
+A separate, read-only service gives developers the published stories as JSON. It runs at **https://storyhub-api.thebesads.com** (`--api-domain` changes it).
+
+- **Service:** `story-hub-api` on 127.0.0.1:8767. It uses only the read-only `story_site` database login, so it can't change anything.
+- **Keys:** admins create and revoke keys on the desk's **API** page, which also has the developer documentation. Only a hash of each key is stored. You can also manage keys from the command line: `sudo -u storyhub -H bash -c 'cd /opt/story-hub && .venv/bin/python -m storyapi keys list'`.
+- **Endpoints:** `/v1/stories` (filters, paging, `updated_since` for syncing, `include_retracted`), `/v1/stories/{slug}`, `/v1/categories`, and `/v1/openapi.json`.
+
+**One-time setup:**
+1. In Cloudflare **DNS**, add an `A` record named `storyhub-api` pointing to `172.105.48.107`, with **Proxied** on.
+2. Don't add it to Cloudflare Access. Developers' servers must reach it directly; the API key is the lock. If your Access application uses a wildcard like `*.thebesads.com`, exclude this hostname.
+3. If the zone isn't on **Full (strict)**, add a Configuration Rule for `storyhub-api.thebesads.com` as well, just like the one for the desk.
+4. On the server, run:
+
+   ```bash
+   cd /opt/story-hub && sudo bash deploy/setup_vps.sh --letsencrypt adesh@thebesads.com
+   ```
+
+   This installs the service, gets the API's certificate and sets up its site in nginx. It also refreshes the update command, so later deploys restart the API too. If Let's Encrypt can't verify the domain, use the same grey-cloud trick as for the desk.
+5. Check it: `curl https://storyhub-api.thebesads.com/v1` lists the endpoints. `/v1/stories` without a key answers **401**.
 
 ## Updating
 

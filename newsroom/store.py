@@ -64,14 +64,15 @@ def add_revision(db: Database, story_id: int, version: int, content: dict, *, au
     return db.insert(  # type: ignore[return-value]
         """insert into newsroom.story_revisions
            (story_id, version, author_kind, author_id, headline, dek, sections, takeaways, action_steps,
-            topics, meta_description, sources, body_md, blocks, word_count, guardrails, model, note, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
+            topics, meta_description, sources, body_md, blocks, seo, word_count, guardrails, model, note, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
         (
             story_id, version, author_kind, author_id, content["headline"], content.get("dek"),
             db.j({k: (content.get("sections") or {}).get(k, "") for k in PROSE_KEYS}),
             db.j(content.get("takeaways") or []), db.j(content.get("action_steps") or []),
             db.j(content.get("topics") or []), content.get("meta_description"),
             db.j(content.get("sources") or []), body, db.j(blocks) if blocks else None,
+            db.j(content["seo"]) if content.get("seo") else None,
             (guardrails or {}).get("metrics", {}).get("word_count") or len(body.split()),
             db.j(guardrails) if guardrails is not None else None, model, note, utcnow(),
         ),
@@ -126,14 +127,14 @@ def get_story(db: Database, story_id: int) -> dict | None:
 def decode_revision(rev: dict) -> dict:
     rev = dict(rev)
     for key, default in (("sections", {}), ("takeaways", []), ("action_steps", []), ("topics", []),
-                         ("sources", []), ("guardrails", None), ("blocks", None)):
+                         ("sources", []), ("guardrails", None), ("blocks", None), ("seo", None)):
         rev[key] = Database.unj(rev.get(key), default)
     return rev
 
 
 def revision_content(rev: dict) -> dict:
     return {k: rev.get(k) for k in ("headline", "dek", "sections", "takeaways", "action_steps",
-                                    "topics", "meta_description", "sources", "blocks")}
+                                    "topics", "meta_description", "sources", "blocks", "seo")}
 
 
 def editor_blocks(rev: dict, category: str | None = None) -> list[dict]:

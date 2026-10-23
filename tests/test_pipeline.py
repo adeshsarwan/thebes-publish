@@ -452,6 +452,14 @@ class PostgresRolesTest(Base):
         for sql in ("delete from pipeline.raw_items", "update pipeline.evaluations set decision = 'run'"):
             with self.assertRaises(Exception, msg=sql):
                 news.execute(sql)
+        # Stories API keys: the newsroom (admins) creates them; the API's site login can only read them
+        from storyapi import keys
+        _, key = keys.create(news, {"role": "admin", "email": "t@example.com"}, "Role test")
+        self.assertIsNotNone(keys.verify(site, key))
+        for sql in ("insert into site.api_clients (name, key_prefix, key_hash) values ('x','x','x')",
+                    "update site.api_clients set revoked_at = null"):
+            with self.assertRaises(Exception, msg=sql):
+                site.execute(sql)
 
 
 if __name__ == "__main__":

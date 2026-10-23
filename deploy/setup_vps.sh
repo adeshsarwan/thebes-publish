@@ -8,12 +8,15 @@
 #   - PostgreSQL 17 (listening on this machine only) with database "storyhub"
 #   - system user "storyhub", code in /opt/story-hub, data in /var/lib/story-hub
 #   - systemd service "story-hub-desk" on 127.0.0.1:8765
+#   - systemd service "story-hub-api" (read-only Stories API) on 127.0.0.1:8767
 #   - /etc/cron.d/story-hub (pipeline schedule every 10 min, nightly backup)
 #   - nginx site for the domain, accepting Cloudflare's addresses only, with a Let's Encrypt
 #     certificate (certbot renews it and reloads nginx automatically)
 set -euo pipefail
 
 DOMAIN="publish.thebesads.com"
+API_DOMAIN="storyhub-api.thebesads.com"   # the Stories API for website developers (no Cloudflare Access)
+API_PORT=8767
 RESTORE=""
 LE_EMAIL=""
 APP_DIR="/opt/story-hub"
@@ -29,6 +32,7 @@ PG_MAJOR=17
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
+    --api-domain) API_DOMAIN="$2"; shift 2 ;;
     --restore) RESTORE="$2"; shift 2 ;;
     --letsencrypt) LE_EMAIL="$2"; shift 2 ;;
     *) echo "unknown option: $1"; exit 1 ;;
@@ -125,6 +129,7 @@ setenv ADMIN_DATABASE_URL "$ADMIN_URL"
 setenv APP_ENV production
 setenv DESK_BIND 127.0.0.1
 setenv DESK_HOSTS "$DOMAIN"
+setenv STORY_API_URL "https://$API_DOMAIN"
 setenv DESK_TRUST_PROXY 1
 setenv FINANCE_DATA_DIR "$DATA_DIR"
 grep -qE '^LLM_PROVIDER=' "$ENV_FILE" || setenv LLM_PROVIDER gemini
@@ -144,6 +149,10 @@ install -m 644 deploy/story-hub-desk.service /etc/systemd/system/story-hub-desk.
 systemctl daemon-reload
 systemctl enable -q story-hub-desk
 systemctl restart story-hub-desk
+install -m 644 deploy/story-hub-api.service /etc/systemd/system/story-hub-api.service
+systemctl daemon-reload
+systemctl enable -q story-hub-api
+systemctl restart story-hub-api
 install -m 755 deploy/backup.sh /usr/local/sbin/story-hub-backup
 cat > /etc/cron.d/story-hub <<CRON
 # Story Hub newsroom (installed by deploy/setup_vps.sh)
@@ -205,46 +214,54 @@ SNIP=/etc/nginx/snippets/story-hub-cloudflare-only.conf
 } > "$SNIP.new"
 if grep -q '^allow .*;' "$SNIP.new"; then mv "$SNIP.new" "$SNIP"; else rm -f "$SNIP.new"; echo "!! Could not download Cloudflare's address list; keeping the old one."; fi
 install -d -m 755 "$CERT_DIR" /var/www/letsencrypt
-SITE=/etc/nginx/sites-available/story-hub
-render() { sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CERT__#$1#g" -e "s#__KEY__#$2#g" "$3"; }
-# 1. port 80 first: needed for the Let's Encrypt check, redirects everything else to HTTPS
-render "" "" deploy/nginx-story-hub-http.conf > "$SITE"
-ln -sf "$SITE" /etc/nginx/sites-enabled/story-hub
-nginx -t && systemctl reload nginx
-# 2. certificate
-LE_DIR="/etc/letsencrypt/live/$DOMAIN"
-if [ -n "$LE_EMAIL" ] && [ ! -s "$LE_DIR/fullchain.pem" ]; then
-  command -v certbot >/dev/null || apt-get install -y -qq certbot >/dev/null
-  echo "Requesting a Let's Encrypt certificate for $DOMAIN ..."
-  certbot certonly --webroot -w /var/www/letsencrypt -d "$DOMAIN" --email "$LE_EMAIL" --agree-tos \
-    --non-interactive --deploy-hook "systemctl reload nginx" \
-    || echo "!! Let's Encrypt could not verify $DOMAIN. See 'Certificate' in deploy/README.md (usually Cloudflare's 'Always Use HTTPS')."
-fi
-if [ -s "$LE_DIR/fullchain.pem" ]; then
-  CERT="$LE_DIR/fullchain.pem"; KEY="$LE_DIR/privkey.pem"; CERT_KIND="Let's Encrypt (renews automatically)"
-elif [ -s "$CERT_DIR/origin.pem" ] && [ -s "$CERT_DIR/origin.key" ]; then
-  chmod 600 "$CERT_DIR/origin.key"
-  CERT="$CERT_DIR/origin.pem"; KEY="$CERT_DIR/origin.key"; CERT_KIND="Cloudflare origin certificate"
-else
-  CERT=""
-fi
-# 3. HTTPS once there is a certificate
-if [ -n "$CERT" ]; then
-  { render "" "" deploy/nginx-story-hub-http.conf; echo; render "$CERT" "$KEY" deploy/nginx-story-hub.conf; } > "$SITE"
+
+# site_for NAME DOMAIN PORT ORIGIN_CERT_BASENAME  ->  sets SITE_STATE
+site_for() {
+  local name="$1" domain="$2" port="$3" origin="$4"
+  local site="/etc/nginx/sites-available/$name" le="/etc/letsencrypt/live/$domain" cert="" key="" kind=""
+  render() { sed -e "s/__DOMAIN__/$domain/g" -e "s/__PORT__/$port/g" -e "s#__CERT__#$1#g" -e "s#__KEY__#$2#g" "$3"; }
+  # 1. port 80 first: needed for the Let's Encrypt check, redirects everything else to HTTPS
+  render "" "" deploy/nginx-story-hub-http.conf > "$site"
+  ln -sf "$site" "/etc/nginx/sites-enabled/$name"
   nginx -t && systemctl reload nginx
-  NGINX_STATE="https://$DOMAIN is live ($CERT_KIND)"
-else
-  NGINX_STATE="HTTP only, no certificate yet: run  sudo bash deploy/setup_vps.sh --letsencrypt you@example.com"
-fi
+  # 2. certificate
+  if [ -n "$LE_EMAIL" ] && [ ! -s "$le/fullchain.pem" ]; then
+    command -v certbot >/dev/null || apt-get install -y -qq certbot >/dev/null
+    echo "Requesting a Let's Encrypt certificate for $domain ..."
+    certbot certonly --webroot -w /var/www/letsencrypt -d "$domain" --email "$LE_EMAIL" --agree-tos \
+      --non-interactive --deploy-hook "systemctl reload nginx" \
+      || echo "!! Let's Encrypt could not verify $domain. See 'Certificate' in deploy/README.md (usually Cloudflare's 'Always Use HTTPS')."
+  fi
+  if [ -s "$le/fullchain.pem" ]; then
+    cert="$le/fullchain.pem"; key="$le/privkey.pem"; kind="Let's Encrypt (renews automatically)"
+  elif [ -s "$CERT_DIR/$origin.pem" ] && [ -s "$CERT_DIR/$origin.key" ]; then
+    chmod 600 "$CERT_DIR/$origin.key"
+    cert="$CERT_DIR/$origin.pem"; key="$CERT_DIR/$origin.key"; kind="Cloudflare origin certificate"
+  fi
+  # 3. HTTPS once there is a certificate
+  if [ -n "$cert" ]; then
+    { render "" "" deploy/nginx-story-hub-http.conf; echo; render "$cert" "$key" deploy/nginx-story-hub.conf; } > "$site"
+    nginx -t && systemctl reload nginx
+    SITE_STATE="https://$domain is live ($kind)"
+  else
+    SITE_STATE="$domain: HTTP only, no certificate yet: run  sudo bash deploy/setup_vps.sh --letsencrypt you@example.com"
+  fi
+}
+site_for story-hub "$DOMAIN" "$PORT" origin
+NGINX_STATE="$SITE_STATE"
+site_for story-hub-api "$API_DOMAIN" "$API_PORT" api-origin
+API_STATE="$SITE_STATE"
 
 # ---------------------------------------------------------------- summary
 say "Done"
 sleep 1
 systemctl --no-pager --lines=3 status story-hub-desk | sed -n '1,3p' || true
 curl -fsS -o /dev/null -w "desk on 127.0.0.1:$PORT answers HTTP %{http_code}\n" "http://127.0.0.1:$PORT/login" || echo "!! desk not answering yet: journalctl -u story-hub-desk -n 50"
+curl -fsS -o /dev/null -w "Stories API on 127.0.0.1:$API_PORT answers HTTP %{http_code}\n" "http://127.0.0.1:$API_PORT/v1" || echo "!! API not answering yet: journalctl -u story-hub-api -n 50"
 cat <<NEXT
 
-nginx: $NGINX_STATE
+Desk: $NGINX_STATE
+Stories API: $API_STATE  (keys: desk > API page)
 Database: $DB_NAME on 127.0.0.1:$PGPORT (local only). Backups: $BACKUP_DIR (nightly, 14 days).
 
 Next:
