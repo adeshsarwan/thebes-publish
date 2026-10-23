@@ -271,7 +271,12 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
     o_u, o_p = ORIENT.get(orientation, (None, None))
     results: dict[str, list] = {}
     errors: dict[str, str] = {}
-    want = ("unsplash", "pexels") if provider == "all" else (provider,)
+    if provider == "all":   # only the providers this server has keys for (Pexels has paused new keys)
+        want = tuple(p for p, k in (("unsplash", "UNSPLASH_ACCESS_KEY"), ("pexels", "PEXELS_API_KEY")) if os.getenv(k))
+        if not want:
+            raise MediaError("Stock search isn't set up: add UNSPLASH_ACCESS_KEY to the server's .env.")
+    else:
+        want = (provider,)
     each = per_page if len(want) == 1 else max(1, per_page // 2 + per_page % 2)
     for prov in want:
         try:

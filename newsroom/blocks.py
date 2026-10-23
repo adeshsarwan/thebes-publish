@@ -237,6 +237,12 @@ def clean_image(d: dict) -> dict | None:
     cu = _safe_href(str(d.get("credit_url") or ""))
     if cu:
         out["credit_url"] = cu
+    if d.get("provider") in ("unsplash", "pexels"):   # credit the photographer and the site, each linked
+        out["provider"] = d["provider"]
+        out["photographer"] = _plain(d.get("photographer"), 120)
+        pu = _safe_href(str(d.get("photographer_url") or ""))
+        if pu:
+            out["photographer_url"] = pu
     for k in ("image_id", "width", "height"):
         if isinstance(d.get(k), int) and d[k] > 0:
             out[k] = d[k]
@@ -246,6 +252,22 @@ def clean_image(d: dict) -> dict | None:
         if ok:
             out["sizes"] = dict(list(ok.items())[:8])
     return out
+
+
+PROVIDER_HOME = {"unsplash": ("Unsplash", "https://unsplash.com/?utm_source=story_hub&utm_medium=referral"),
+                 "pexels": ("Pexels", "https://www.pexels.com")}
+
+
+def stock_credit_html(img: dict) -> str:
+    """'Photo by <a>Name</a> on <a>Unsplash</a>', as Unsplash and Pexels ask."""
+    prov = PROVIDER_HOME.get(img.get("provider") or "")
+    name = (img.get("photographer") or "").strip()
+    if not prov or not name:
+        return ""
+    pu = _safe_href(img.get("photographer_url") or "")
+    a = lambda href, text: (f'<a target="_blank" rel="noopener" href="{html.escape(href, quote=True)}">{html.escape(text)}</a>'  # noqa: E731
+                            if href else html.escape(text))
+    return f"Photo by {a(pu, name)} on {a(prov[1], prov[0])}"
 
 
 def figure_html(img: dict, cls: str = "") -> str:
@@ -263,8 +285,8 @@ def figure_html(img: dict, cls: str = "") -> str:
            f'{dims} loading="lazy" decoding="async"'
            + (f' srcset="{srcset}" sizes="(max-width: 800px) 100vw, 800px"' if srcset else "") + ">")
     cap = _render_inline(img.get("caption") or "") if img.get("caption") else ""
-    credit = html.escape(img.get("credit") or "")
-    cu = _safe_href(img.get("credit_url") or "") if credit else None
+    credit = stock_credit_html(img) or html.escape(img.get("credit") or "")
+    cu = _safe_href(img.get("credit_url") or "") if credit and not stock_credit_html(img) else None
     if credit and cu:
         credit = f'<a target="_blank" rel="noopener" href="{html.escape(cu, quote=True)}">{credit}</a>'
     fc = ""

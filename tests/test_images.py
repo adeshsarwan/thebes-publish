@@ -111,8 +111,10 @@ class ImageUnitTest(ImagesBase):
         with mock.patch.dict(os.environ, {"PEXELS_API_KEY": ""}), \
                 mock.patch("newsroom.media.requests.get", side_effect=fake_get([])):
             out = media.search_stock("family budget")
-        self.assertIn("PEXELS_API_KEY", out["errors"]["pexels"])
-        self.assertEqual(len(out["results"]), 1)
+        self.assertEqual((out["errors"], [r["provider"] for r in out["results"]]), ({}, ["unsplash"]))  # Pexels skipped
+        with mock.patch.dict(os.environ, {"PEXELS_API_KEY": "", "UNSPLASH_ACCESS_KEY": ""}):
+            with self.assertRaisesRegex(media.MediaError, "UNSPLASH_ACCESS_KEY"):
+                media.search_stock("family budget")
         with mock.patch("newsroom.media.requests.get", return_value=FakeResp({}, 403)):
             out = media.search_stock("x", "unsplash")
         self.assertIn("limit", out["errors"]["unsplash"])
@@ -136,6 +138,10 @@ class ImageUnitTest(ImagesBase):
         self.assertEqual(list(d["sizes"]), ["640"])
         html = blk.render_blocks(out)
         self.assertIn('<figure class="story-image">', html)
+        credited = blk.figure_html({"url": "https://images.unsplash.com/p?w=1600", "provider": "unsplash", "credit": "Photo by Jane Doe on Unsplash",
+                                    "photographer": "Jane Doe", "photographer_url": "https://unsplash.com/@jane?utm_source=story_hub&utm_medium=referral"})
+        self.assertIn('Photo by <a target="_blank" rel="noopener" href="https://unsplash.com/@jane?utm_source=story_hub&amp;utm_medium=referral">Jane Doe</a> on '
+                      '<a target="_blank" rel="noopener" href="https://unsplash.com/?utm_source=story_hub&amp;utm_medium=referral">Unsplash</a>', credited)
         self.assertIn('srcset="https://images.unsplash.com/photo-1?w=640 640w"', html)
         self.assertIn('loading="lazy"', html)
         self.assertIn("![Bills](https://images.unsplash.com/photo-1?w=1600)",

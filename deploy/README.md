@@ -146,8 +146,8 @@ Images reach the website when a story is published. On a live story, an editor o
 1. **R2 bucket:** in Cloudflare, go to **R2 → Create bucket** and name it `storyhub-media`.
 2. **Custom domain:** in the bucket's **Settings → Custom Domains**, connect `media.thebesads.com`. Cloudflare adds the DNS record itself. Leave the bucket's public `r2.dev` address off.
 3. **R2 token:** go to **R2 → Manage R2 API Tokens → Create API token**. Choose **Object Read & Write**, limited to `storyhub-media`. Note the Access Key ID, the Secret Access Key and your Account ID.
-4. **Unsplash key:** create an app at unsplash.com/developers and copy its **Access Key**. A new app gets 50 requests an hour. Apply for production (5,000 an hour) once the desk shows credits, which it already does.
-5. **Pexels key:** get an API key at pexels.com/api. The limit is 200 requests an hour.
+4. **Unsplash key:** create an app at unsplash.com/developers and copy its **Access Key**. A new app works at once in demo mode (50 requests an hour). Apply for production (1,000 an hour) with screenshots of the credits on the desk.
+5. **Pexels key (optional):** Pexels has paused new API keys. Without one, stock search uses Unsplash only.
 6. **Server settings:** add the keys to `/opt/story-hub/.env` on the server by typing them there (`sudo nano /opt/story-hub/.env`), never in chat or email:
 
    ```

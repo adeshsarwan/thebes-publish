@@ -108,12 +108,7 @@
     head.appendChild(el("span", "img-badge", null, KIND[img.provider] || img.kind));
     info.appendChild(head);
     if (img.prompt && img.kind === "generated") info.appendChild(el("div", "img-prompt", null, img.prompt));
-    if (img.credit && img.kind !== "generated") {
-      var cr = el("div", "img-credit");
-      if (img.credit_url) cr.appendChild(el("a", "", { href: img.credit_url, target: "_blank", rel: "noopener" }, img.credit));
-      else cr.textContent = img.credit;
-      info.appendChild(cr);
-    }
+    if (img.credit && img.kind !== "generated") info.appendChild(creditLine(img));
     if (img.status === "failed" && img.error) info.appendChild(el("div", "img-err", null, img.error));
     if (state.can_manage) info.appendChild(controls(img));
     c.appendChild(info);
@@ -180,13 +175,27 @@
     return box;
   }
 
+  var HOME = { unsplash: ["Unsplash", "https://unsplash.com/?utm_source=story_hub&utm_medium=referral"], pexels: ["Pexels", "https://www.pexels.com"] };
+  // "Photo by <photographer> on <Unsplash>", both linked, as the photo sites ask
+  function creditLine(img) {
+    var cr = el("div", "img-credit"), home = HOME[img.provider];
+    if (home && img.photographer) {
+      cr.appendChild(document.createTextNode("Photo by "));
+      cr.appendChild(img.photographer_url ? el("a", "", { href: img.photographer_url, target: "_blank", rel: "noopener" }, img.photographer) : document.createTextNode(img.photographer));
+      cr.appendChild(document.createTextNode(" on "));
+      cr.appendChild(el("a", "", { href: home[1], target: "_blank", rel: "noopener" }, home[0]));
+    } else if (img.credit_url) cr.appendChild(el("a", "", { href: img.credit_url, target: "_blank", rel: "noopener" }, img.credit));
+    else cr.textContent = img.credit || "";
+    return cr;
+  }
   function remove(img) {
     post("/images/" + img.id + "/remove").then(function () { toast("Removed from the story."); refresh(); })
       .catch(function (e) { toast(e.message, true); });
   }
   function insert(img, where) {
     window.FH_EDITOR.insertImage({ url: img.url, alt: img.alt || "", caption: img.caption || "", credit: img.credit || "",
-      credit_url: img.credit_url || "", image_id: img.id, width: img.width || undefined, height: img.height || undefined,
+      credit_url: img.credit_url || "", provider: img.provider, photographer: img.photographer || "",
+      photographer_url: img.photographer_url || "", image_id: img.id, width: img.width || undefined, height: img.height || undefined,
       sizes: img.sizes || {} }, where);
     closeDialog();
   }
@@ -234,7 +243,7 @@
     ready.forEach(function (img) {
       var c = el("div", "img-res");
       c.appendChild(el("img", "", { src: thumb(img), alt: img.alt || "", loading: "lazy" }));
-      c.appendChild(el("div", "img-credit", null, img.credit || KIND[img.provider] || ""));
+      c.appendChild(img.credit ? creditLine(img) : el("div", "img-credit", null, KIND[img.provider] || ""));
       c.appendChild(button("Insert", "primary", function () { var w = pending; pending = null; insert(img, w); }));
       grid.appendChild(c);
     });
@@ -246,16 +255,15 @@
     var form = el("form", "img-search");
     var q = el("input", "", { type: "search", name: "q", placeholder: "Search Unsplash and Pexels, e.g. family budget kitchen", "aria-label": "Search" });
     q.value = stockTab.last || boot.query || "";
-    var prov = select("provider", [["all", "Unsplash + Pexels"], ["unsplash", "Unsplash"], ["pexels", "Pexels"]], stockTab.prov || "all");
+    var provs = [["unsplash", "Unsplash"], ["pexels", "Pexels"]].filter(function (x) { return st[x[0]]; });
+    var prov = select("provider", (provs.length > 1 ? [["all", "Unsplash + Pexels"]] : []).concat(provs.length ? provs : [["all", "Stock"]]),
+      stockTab.prov || (provs.length > 1 ? "all" : (provs[0] || ["all"])[0]));
     var orient = select("orientation", [["landscape", "Landscape"], ["portrait", "Portrait"], ["square", "Square"], ["any", "Any shape"]], stockTab.orient || "landscape");
     form.appendChild(q); form.appendChild(prov); form.appendChild(orient);
     form.appendChild(el("button", "primary", { type: "submit" }, "Search"));
     pane.appendChild(form);
-    var missing = [];
-    if (!st.unsplash) missing.push("Unsplash (UNSPLASH_ACCESS_KEY)");
-    if (!st.pexels) missing.push("Pexels (PEXELS_API_KEY)");
-    if (missing.length) pane.appendChild(el("p", "img-note warn", null, "Not set up on this server: " + missing.join(", ") + "."));
-    pane.appendChild(el("p", "meta", null, "Photos are shown from the photographer's site with a credit, as their licences ask. Free to use; no copyright fee."));
+    if (!st.unsplash && !st.pexels) pane.appendChild(el("p", "img-note warn", null, "Stock search isn't set up on this server: add UNSPLASH_ACCESS_KEY to its settings."));
+    pane.appendChild(el("p", "meta", null, "Photos are shown from " + (provs.length === 1 ? provs[0][1] : "the photo site") + " with a credit to the photographer, as the licence asks. Free to use; no fee."));
     var errs = el("div", "img-err"), grid = el("div", "img-grid"), more = el("div", "img-more");
     pane.appendChild(errs); pane.appendChild(grid); pane.appendChild(more);
     var page = 1;
@@ -282,7 +290,8 @@
     var a = el("a", "", { href: p.source_url, target: "_blank", rel: "noopener", title: "Open on " + KIND[p.provider] });
     a.appendChild(el("img", "", { src: p.thumb, alt: p.alt || "", loading: "lazy" }));
     c.appendChild(a);
-    c.appendChild(el("div", "img-credit", null, p.credit + (p.width ? " · " + p.width + "×" + p.height : "")));
+    var cl = creditLine(p); if (p.width) cl.appendChild(document.createTextNode(" · " + p.width + "×" + p.height));
+    c.appendChild(cl);
     var row = el("div", "img-row");
     function add(role, b) {
       b.disabled = true;
