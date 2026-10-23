@@ -121,6 +121,21 @@ class ImageUnitTest(ImagesBase):
         with self.assertRaises(media.MediaError):
             media.search_stock("   ")
 
+    def test_r2_errors_and_pasted_credits(self):
+        from newsroom import media
+        st = object.__new__(media.R2Storage); st.bucket = "storyhub-media"
+
+        class ClientError(Exception):
+            def __init__(self, code):
+                super().__init__(code); self.response = {"Error": {"Code": code}}
+        self.assertIn("doesn't have write access to bucket storyhub-media", str(st._error(ClientError("AccessDenied"))))
+        self.assertIn("Secret Access Key", str(st._error(ClientError("SignatureDoesNotMatch"))))
+        snippet = ('Photo by <a href="https://unsplash.com/@skillscouter?utm_source=unsplash&utm_medium=referral">Lewis Keegan</a>'
+                   ' on <a href="https://unsplash.com/photos/x">Unsplash</a>')
+        self.assertEqual(media.clean_credit(snippet), ("Photo by Lewis Keegan on Unsplash",
+                                                       "https://unsplash.com/@skillscouter?utm_source=unsplash&utm_medium=referral"))
+        self.assertEqual(media.clean_credit("Photo: Jane / Agency"), ("Photo: Jane / Agency", None))
+
     def test_country_setting_in_searches_and_prompts(self):
         from newsroom import media
         self.assertEqual(media.with_country("student loan", "US"), "student loan usa")

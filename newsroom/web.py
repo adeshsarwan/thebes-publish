@@ -1572,6 +1572,11 @@ class Handler(BaseHTTPRequestHandler):
         except (media.MediaError, wf.WorkflowError, ValueError) as exc:
             db.rollback()
             return self._json(400, {"error": str(exc)})
+        except Exception as exc:   # never drop the connection (nginx would show a bare 502)
+            import traceback
+            traceback.print_exc()
+            db.rollback()
+            return self._json(500, {"error": f"Something went wrong on the server: {type(exc).__name__}: {str(exc)[:300]}"})
 
     def _render(self, db, user, out, active, q=None, code=200, refresh=None, wide=False):
         if out is None:

@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("schedule"); p.add_argument("op", choices=["install", "uninstall", "status"])
     sub.add_parser("sources")
     p = sub.add_parser("pickup-run"); p.add_argument("request_id", type=int); p.add_argument("--mock", action="store_true")
+    sub.add_parser("media-check", help="test R2 storage, Unsplash and Gemini image settings")
     p = sub.add_parser("image-run", help="generate queued AI images (started by the desk)")
     p.add_argument("image_ids", type=int, nargs="+"); p.add_argument("--mock", action="store_true")
     p = sub.add_parser("pickup", help="editor override: research and draft a desk story now")
@@ -66,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
         story_id = run_request(args.request_id, get_client(args.mock))
         print(f"pick request {args.request_id} done: story {story_id}")
         return 0
+
+    if args.cmd == "media-check":
+        from .media import check_setup
+        ok = True
+        for name, good, detail in check_setup():
+            ok &= good
+            print(f"{'OK  ' if good else 'FAIL'} {name}: {detail}")
+        return 0 if ok else 1
 
     if args.cmd == "image-run":
         from pipeline.db import connect

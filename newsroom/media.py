@@ -75,20 +75,50 @@ class R2Storage:
         import boto3   # imported here so the rest of the app runs without it
         from botocore.config import Config
 
-        self.bucket = os.environ["R2_BUCKET"]
-        self.base = os.environ["MEDIA_BASE_URL"].rstrip("/")
-        self.client = boto3.client(
-            "s3", endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-            region_name="auto", config=Config(retries={"max_attempts": 4, "mode": "standard"}))
+        env = lambda k: os.environ[k].strip().strip('"').strip("'")  # noqa: E731  (stray spaces/quotes in .env)
+        self.bucket = env("R2_BUCKET")
+        self.base = env("MEDIA_BASE_URL").rstrip("/")
+        self.key_id = env("R2_ACCESS_KEY_ID")
+        self.endpoint = f"https://{env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com"
+        try:   # newer botocore adds checksum headers by default; send them only when an API requires them
+            config = Config(retries={"max_attempts": 4, "mode": "standard"},
+                            request_checksum_calculation="when_required", response_checksum_validation="when_required")
+        except TypeError:
+            config = Config(retries={"max_attempts": 4, "mode": "standard"})
+        self.client = boto3.client("s3", endpoint_url=self.endpoint, aws_access_key_id=self.key_id,
+                                   aws_secret_access_key=env("R2_SECRET_ACCESS_KEY"), region_name="auto", config=config)
+
+    R2_HINTS = {
+        "AccessDenied": "R2 refused it (AccessDenied): the key doesn't have write access to bucket {bucket}. "
+                        "Check R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY come from the storyhub-server token "
+                        "(Object Read & Write on storyhub-media) and R2_BUCKET is exactly storyhub-media.",
+        "InvalidAccessKeyId": "R2 doesn't know this R2_ACCESS_KEY_ID: copy it again from the storyhub-server token.",
+        "SignatureDoesNotMatch": "R2_SECRET_ACCESS_KEY doesn't match the key ID: copy the Secret Access Key again "
+                                 "(make a new token if you no longer have it).",
+        "NoSuchBucket": "There's no bucket called {bucket} in this account: check R2_BUCKET and R2_ACCOUNT_ID.",
+    }
+
+    def _error(self, exc) -> "MediaError":
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
+        hint = self.R2_HINTS.get(code)
+        if hint:
+            return MediaError(hint.format(bucket=self.bucket))
+        return MediaError(f"Couldn't save to Cloudflare R2: {exc}")
 
     def put(self, key: str, data: bytes, content_type: str) -> str:
-        self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type,
-                               CacheControl="public, max-age=31536000, immutable")
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type,
+                                   CacheControl="public, max-age=31536000, immutable")
+        except Exception as exc:   # botocore errors -> a message an editor can act on
+            log.warning("R2 put %s failed: %s", key, exc)
+            raise self._error(exc) from exc
         return f"{self.base}/{key}"
 
     def delete(self, key: str) -> None:
-        self.client.delete_object(Bucket=self.bucket, Key=key)
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:
+            raise self._error(exc) from exc
 
 
 class LocalStorage:
@@ -168,6 +198,44 @@ def status() -> dict:
             "pexels": bool(os.getenv("PEXELS_API_KEY")),
             "generate": bool(st) and (get_settings().llm_provider == "mock" or bool(get_settings().gemini_api_key)),
             "model": cfg()["model"]}
+
+
+def check_setup() -> list[tuple[str, bool, str]]:
+    """For `python -m newsroom media-check`: what works, and what to fix. Never prints secrets."""
+    out = []
+    missing = [k for k in R2_KEYS if not os.getenv(k)]
+    if missing:
+        out.append(("R2 storage", False, "missing in .env: " + ", ".join(missing)))
+    else:
+        try:
+            st = R2Storage()
+            kid = st.key_id
+            out.append(("R2 settings", True, f"bucket {st.bucket!r}, endpoint {st.endpoint}, key ID {kid[:4]}…{kid[-4:]} "
+                                             f"({len(kid)} characters; R2 key IDs have 32), public address {st.base}"))
+            key = f"healthcheck/{secrets.token_hex(4)}.txt"
+            url = st.put(key, b"ok", "text/plain")
+            st.delete(key)
+            out.append(("R2 write", True, f"wrote and deleted a test file ({url})"))
+        except MediaError as exc:
+            out.append(("R2 write", False, str(exc)))
+        except Exception as exc:   # noqa: BLE001
+            out.append(("R2 write", False, f"{type(exc).__name__}: {exc}"))
+    if os.getenv("UNSPLASH_ACCESS_KEY"):
+        try:
+            r = requests.get("https://api.unsplash.com/search/photos", params={"query": "kitchen", "per_page": 1},
+                             timeout=TIMEOUT, headers={"Authorization": f"Client-ID {os.environ['UNSPLASH_ACCESS_KEY'].strip()}",
+                                                       "Accept-Version": "v1"})
+            left = r.headers.get("X-Ratelimit-Remaining", "?")
+            out.append(("Unsplash", r.ok, f"HTTP {r.status_code}, {left} searches left this hour" if r.ok
+                        else f"HTTP {r.status_code}: the key was refused"))
+        except requests.RequestException as exc:
+            out.append(("Unsplash", False, f"couldn't reach Unsplash: {exc}"))
+    else:
+        out.append(("Unsplash", False, "UNSPLASH_ACCESS_KEY is not in .env"))
+    s = get_settings()
+    out.append(("Gemini (AI images)", bool(s.gemini_api_key) or s.llm_provider == "mock",
+                f"model {cfg()['model']}" if s.gemini_api_key else "GEMINI_API_KEY is not in .env"))
+    return out
 
 
 # --------------------------------------------------------------------------- image files
@@ -303,7 +371,7 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
     for prov in want:
         try:
             if prov == "unsplash":
-                key = os.getenv("UNSPLASH_ACCESS_KEY")
+                key = (os.getenv("UNSPLASH_ACCESS_KEY") or "").strip()
                 if not key:
                     raise MediaError("no UNSPLASH_ACCESS_KEY on this server")
                 params = {"query": query, "per_page": each, "page": page, "content_filter": "high"}
@@ -314,7 +382,7 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
                 r.raise_for_status()
                 results[prov] = [_remember(_unsplash(p)) for p in r.json().get("results", [])]
             elif prov == "pexels":
-                key = os.getenv("PEXELS_API_KEY")
+                key = (os.getenv("PEXELS_API_KEY") or "").strip()
                 if not key:
                     raise MediaError("no PEXELS_API_KEY on this server")
                 params = {"query": query, "per_page": each, "page": page}
@@ -371,7 +439,7 @@ def stock_photo(provider: str, provider_id: str) -> dict:
 def _report_unsplash_download(photo: dict) -> None:
     """Unsplash's terms: tell them when a photo is used. Best effort, never blocks."""
     loc = photo.get("download_location")
-    key = os.getenv("UNSPLASH_ACCESS_KEY")
+    key = (os.getenv("UNSPLASH_ACCESS_KEY") or "").strip()
     if photo.get("provider") != "unsplash" or not loc or not key:
         return
     try:
@@ -564,9 +632,20 @@ def start_background(image_ids: list[int]) -> None:
     log_fh.close()
 
 
+def clean_credit(credit: str) -> tuple[str, str | None]:
+    """Plain-text credit plus its first link. Accepts the HTML snippet Unsplash's "copy credit" gives."""
+    import html as _html
+    raw = (credit or "").strip()
+    m = re.search(r'href=["\']([^"\']+)["\']', raw)
+    link = m.group(1) if m and m.group(1).startswith("https://") else None
+    text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]*>", "", raw))).strip()[:200]
+    return text, link
+
+
 def add_upload(db: Database, user: dict | None, story_id: int, data: bytes, filename: str = "",
                role: str = "gallery", alt: str = "", caption: str = "", credit: str = "") -> int:
     _check(db, user, story_id)
+    credit, credit_url = clean_credit(credit)
     if len(data) > int(cfg()["max_upload_mb"]) * 1024 * 1024:
         raise MediaError(f"That file is over {cfg()['max_upload_mb']} MB.")
     if not data:
@@ -575,10 +654,10 @@ def add_upload(db: Database, user: dict | None, story_id: int, data: bytes, file
     role = _role(role)
     iid = db.insert(
         """insert into newsroom.story_images (story_id, kind, provider, status, role, url, sizes, width, height,
-             storage_keys, alt, caption, credit, prompt, created_by, created_at, updated_at)
-           values (?, 'upload', 'upload', 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id""",
+             storage_keys, alt, caption, credit, credit_url, prompt, created_by, created_at, updated_at)
+           values (?, 'upload', 'upload', 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id""",
         (story_id, role, saved["url"], db.j(saved["sizes"]), saved["width"], saved["height"], db.j(saved["storage_keys"]),
-         alt.strip()[:300] or None, caption.strip()[:500] or None, credit.strip()[:200] or None,
+         alt.strip()[:300] or None, caption.strip()[:500] or None, credit or None, credit_url,
          (filename or "")[:200] or None, user["id"] if user else None, utcnow(), utcnow()))
     if role == "hero":
         _make_hero(db, story_id, iid)
@@ -603,7 +682,9 @@ def update_image(db: Database, user: dict | None, image_id: int, **fields) -> di
         if k in fields and fields[k] is not None:
             sets.append(f"{k} = ?"); params.append(str(fields[k]).strip()[:n] or None)
     if "credit" in fields and fields["credit"] is not None and img["kind"] == "upload":
-        sets.append("credit = ?"); params.append(str(fields["credit"]).strip()[:200] or None)
+        text, link = clean_credit(str(fields["credit"]))
+        sets.append("credit = ?"); params.append(text or None)
+        sets.append("credit_url = ?"); params.append(link)
     if "position" in fields:
         pos = fields["position"] or None
         if pos and pos not in categories.SECTION_KEYS:

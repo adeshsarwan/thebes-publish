@@ -353,12 +353,24 @@
     pane.appendChild(row2);
   }
 
+  // Big camera/stock files are scaled to 2400px wide in the browser first: faster, and under the server's limit.
+  function shrink(file) {
+    var MAX = 2400;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || !window.createImageBitmap) return Promise.resolve(file);
+    return createImageBitmap(file).then(function (bmp) {
+      if (bmp.width <= MAX && file.size < 3 * 1048576) return file;
+      var w = Math.min(MAX, bmp.width), h = Math.round(bmp.height * w / bmp.width);
+      var c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+      return new Promise(function (ok) { c.toBlob(function (bl) { ok(bl || file); }, "image/jpeg", 0.9); });
+    }).catch(function () { return file; });
+  }
   function uploadTab(pane) {
     var st = state.status;
     if (!st.storage) { pane.appendChild(el("p", "img-note warn", null, "Uploads need Cloudflare R2 storage: add the R2 keys to the server's settings.")); return; }
     var file = el("input", "", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif", "aria-label": "Image file" });
     var alt = el("input", "", { type: "text", placeholder: "Alt text: what the image shows" });
-    var credit = el("input", "", { type: "text", placeholder: "Credit, e.g. Photo: Jane Doe / Agency (only use images you have the rights to)" });
+    var credit = el("input", "", { type: "text", placeholder: "Credit, e.g. Photo: Jane Doe / Agency (pasting Unsplash's credit snippet is fine)" });
     var role = select("role", [["gallery", "Decide later"], ["hero", "Main image"], ["inline", "In the story"]], pending ? "inline" : "gallery");
     [file, alt, credit, role].forEach(function (x) { pane.appendChild(x); });
     pane.appendChild(el("p", "meta", null, "JPEG, PNG, WebP or GIF up to " + boot.max_upload_mb + " MB. Saved as WebP in several sizes."));
@@ -367,9 +379,11 @@
       if (!f) { toast("Choose a file first.", true); return; }
       if (f.size > boot.max_upload_mb * 1048576) { toast("That file is over " + boot.max_upload_mb + " MB.", true); return; }
       b.disabled = true; b.textContent = "Uploading…";
-      fetch("/story/" + sid + "/images/upload?" + new URLSearchParams({ role: role.value, alt: alt.value, credit: credit.value }), {
-        method: "POST", credentials: "same-origin", body: f,
-        headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(f.name) } })
+      shrink(f).then(function (blob) {
+        return fetch("/story/" + sid + "/images/upload?" + new URLSearchParams({ role: role.value, alt: alt.value, credit: credit.value }), {
+          method: "POST", credentials: "same-origin", body: blob,
+          headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(f.name) } });
+      })
         .then(answer).then(function (j) { toast("Uploaded."); if (!pending) closeDialog(); afterAdd(j.id); })
         .catch(function (e) { b.disabled = false; b.textContent = "Upload"; toast(e.message, true); });
     }));
