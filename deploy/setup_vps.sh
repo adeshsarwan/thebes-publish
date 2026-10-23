@@ -40,14 +40,17 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------- packages
 say "Packages"
-apt-get update -qq
+# Other repositories configured on this server may be broken or retired; that shouldn't stop us.
+apt-get update -qq || echo "!! apt-get update reported problems with other repositories (above). Continuing; they aren't needed here."
 apt-get install -y -qq curl ca-certificates gnupg git python3-venv python3-pip rsync >/dev/null
 if ! command -v "/usr/lib/postgresql/$PG_MAJOR/bin/postgres" >/dev/null 2>&1; then
   install -d /usr/share/postgresql-common/pgdg
   curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
   echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release; echo "$VERSION_CODENAME")-pgdg main" \
     > /etc/apt/sources.list.d/pgdg.list
-  apt-get update -qq
+  # refresh only the PostgreSQL repository, and require that one to work
+  apt-get update -qq -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/pgdg.list \
+    -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
   apt-get install -y -qq "postgresql-$PG_MAJOR" >/dev/null
 fi
 # Postgres must only listen on this machine
