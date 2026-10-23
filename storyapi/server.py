@@ -225,7 +225,8 @@ def openapi(base: str) -> dict:
                               "401": {"description": "missing or revoked key"}, "429": {"description": "rate limited"}}}},
             "/v1/stories/{slug}": {"get": {
                 "summary": "One story: body_html, body_markdown, blocks or sections, action steps, takeaways, "
-                           "sources, SEO (title, description, focus_keyword, keywords), author, byline, disclosure",
+                           "sources, SEO (title, description, focus_keyword, keywords), hero_image, images (every image the story "
+                           "shows, with sizes, alt, caption, credit and photographer), author, byline, disclosure",
                 "parameters": [{"name": "slug", "in": "path", "required": True, "schema": {"type": "string"}}],
                 "responses": {"200": {"description": "data: Story"}, "404": {"description": "not found"},
                               "410": {"description": "unpublished: remove it from your site"}}}},

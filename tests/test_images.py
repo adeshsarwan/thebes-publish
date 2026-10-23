@@ -272,6 +272,14 @@ class ImageFlowTest(ImagesBase):
         self.assertEqual(api["images"][1]["section"], "who_is_affected")
         self.assertIn("Rates over a year", api["body_html"])
         self.assertIn("<figure", api["body_html"])
+        blocky = dict(row, display_name="Maya", author_slug="maya", job_title=None, bio=None, credentials=None, avatar_url=None,
+                      blocks=db.j([{"type": "paragraph", "data": {"text": "x"}},
+                                   {"type": "image", "data": {"url": "https://images.unsplash.com/z?w=1600", "alt": "z",
+                                                              "credit": "Photo by Z on Unsplash", "provider": "unsplash", "photographer": "Z"}}]))
+        api2 = api_stories.story(blocky)
+        body_img = api2["images"][-1]
+        self.assertEqual((body_img["role"], body_img["block"], body_img["photographer"]), ("inline", 1, "Z"))
+        self.assertIn("images.unsplash.com/z", api2["body_html"])
 
         # changing images after publishing doesn't touch the site until someone sends them
         media.update_image(db, maya, up, role="gallery")

@@ -69,12 +69,27 @@ def _seo(r: dict) -> dict:
 
 
 def _images(r: dict) -> list[dict]:
-    out = []
+    """Every image the story shows: the main image, in-story images, and images placed in the body
+    with the block editor (role "inline", `block` = their position among the blocks)."""
+    out, seen = [], set()
     for img in Database.unj(r.get("images"), []) or []:
         item = {k: img.get(k) for k in IMAGE_FIELDS}
         item["role"] = img.get("role")
         item["section"] = img.get("position")
+        item["block"] = None
         out.append(item)
+        seen.add(img.get("url"))
+    for n, b in enumerate(Database.unj(r.get("blocks"), None) or []):
+        if b.get("type") != "image":
+            continue
+        d = b.get("data") or {}
+        if d.get("url") in seen:
+            next(i for i in out if i["url"] == d.get("url"))["block"] = n
+            continue
+        item = {k: d.get(k) for k in IMAGE_FIELDS}
+        item.update(role="inline", section=None, block=n, sizes=d.get("sizes") or {})
+        out.append(item)
+        seen.add(d.get("url"))
     return out
 
 
