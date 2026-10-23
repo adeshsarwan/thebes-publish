@@ -112,8 +112,10 @@ def add_source(db: Database, user: dict, *, name: str, country: str, url: str, k
     if full_text and reuse not in ("public_domain", "ogl"):
         raise SourceError("Full-page text can only be used for public-domain or Open Government Licence sources.")
     canon = canonical_url(url)
-    for existing in db.fetchall("select id, name, url from pipeline.sources"):
+    for existing in db.fetchall("select id, name, url, deleted_at from pipeline.sources"):
         if canonical_url(existing["url"]) == canon:
+            if existing.get("deleted_at"):
+                raise SourceError(f"That feed was deleted ({existing['name']}). Restore it under Deleted feeds at the bottom of this page.")
             raise SourceError(f"That feed is already a source: {existing['name']}.")
     report = tester(url)
     base = f"{country.lower()}-{slugify(name, 40)}"
@@ -140,9 +142,38 @@ def set_active(db: Database, user: dict, source_id: str, active: bool) -> None:
     db.commit()
 
 
-def list_sources(db: Database) -> list[dict]:
+def _own(db: Database, user: dict, source_id: str) -> dict:
+    if not can_manage(user):
+        raise SourceError("Only editors and admins can change sources.")
+    src = db.fetchone("select * from pipeline.sources where id = ?", (source_id,))
+    if not src:
+        raise SourceError("No such source.")
+    if not categories.can_access(user, src.get("category")):
+        raise SourceError(f"You don't work on {categories.name(src.get('category'))} sources.")
+    return src
+
+
+def delete_source(db: Database, user: dict, source_id: str) -> dict:
+    """Remove a feed from the desk. It stops being pulled and feeds.yaml won't add it back.
+    Items already pulled, and stories written from them, are kept (they cite this source)."""
+    src = _own(db, user, source_id)
+    db.execute("update pipeline.sources set active = ?, deleted_at = ?, deleted_by = ? where id = ?",
+               (False, utcnow(), user["email"], source_id))
+    db.commit()
+    return src
+
+
+def restore_source(db: Database, user: dict, source_id: str) -> dict:
+    src = _own(db, user, source_id)
+    db.execute("update pipeline.sources set active = ?, deleted_at = null, deleted_by = null where id = ?", (True, source_id))
+    db.commit()
+    return src
+
+
+def list_sources(db: Database, deleted: bool = False) -> list[dict]:
     rows = db.fetchall(
         """select s.*, (select count(*) from pipeline.raw_items r where r.source_id = s.id) as items,
                   (select max(r.published_at) from pipeline.raw_items r where r.source_id = s.id) as newest
-           from pipeline.sources s order by s.active desc, s.category, s.country, s.name""")
+           from pipeline.sources s where s.deleted_at is """ + ("not null" if deleted else "null") + """
+           order by s.active desc, s.category, s.country, s.name""")
     return rows

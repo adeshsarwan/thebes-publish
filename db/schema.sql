@@ -35,7 +35,9 @@ create table if not exists pipeline.sources (
     last_fetched_at timestamptz,
     last_status     text,
     added_by        text,                            -- 'config' (feeds.yaml) or the newsroom user's email
-    created_at      timestamptz not null default now()
+    created_at      timestamptz not null default now(),
+    deleted_at      timestamptz,                     -- deleted in the desk: hidden, never pulled or re-added from feeds.yaml
+    deleted_by      text
 );
 
 create table if not exists pipeline.story_clusters (
@@ -300,6 +302,8 @@ alter table site.published_stories add column if not exists seo jsonb;
 create index if not exists site_updated on site.published_stories (updated_at);
 alter table newsroom.pick_requests add column if not exists image_prompts jsonb not null default '[]';
 alter table pipeline.evaluations add column if not exists image_query text;
+alter table pipeline.sources add column if not exists deleted_at timestamptz;
+alter table pipeline.sources add column if not exists deleted_by text;
 alter table pipeline.evaluations add column if not exists image_prompt text;
 alter table site.published_stories add column if not exists images jsonb not null default '[]';
 

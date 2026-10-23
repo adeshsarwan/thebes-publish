@@ -213,7 +213,7 @@ def sync_sources(db: Database) -> list[dict]:
              bool(src.get("full_text", False)), bool(src.get("active", True)), "config", utcnow()),
         )
     db.commit()
-    return db.fetchall("select * from pipeline.sources where active = ? order by country, id", (True,))
+    return db.fetchall("select * from pipeline.sources where active = ? and deleted_at is null order by country, id", (True,))
 
 
 def _prefilter(title: str, category: str | None = None) -> str | None:

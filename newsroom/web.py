@@ -1391,8 +1391,12 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
     for r in srcs:
         toggle = ""
         if can and categories.can_access(user, r.get("category")):
-            toggle = (f'<form class="inline" method="post" action="/sources/{e(r["id"])}"><input type="hidden" name="active" value="{"0" if r["active"] else "1"}">'
-                      f'<button class="{"danger" if r["active"] else ""}">{"Switch off" if r["active"] else "Switch on"}</button></form>')
+            warn = (f"Delete {r['name']}? It stops being pulled and won't come back from the config file. "
+                    f"Its {r['items']} pulled item(s) and any stories from them are kept. You can restore it at the bottom of this page.")
+            toggle = (f'<div class="row-actions"><form class="inline" method="post" action="/sources/{e(r["id"])}"><input type="hidden" name="active" value="{"0" if r["active"] else "1"}">'
+                      f'<button class="{"danger" if r["active"] else ""}">{"Switch off" if r["active"] else "Switch on"}</button></form>'
+                      f'<form class="inline" method="post" action="/sources/{e(r["id"])}/delete" onsubmit="return confirm(this.dataset.warn)" data-warn="{e(warn)}">'
+                      f'<button class="link danger" title="Remove this feed from the desk">Delete</button></form></div>')
         status = (r.get("last_status") or "not fetched yet")
         status_cls = "bad" if status.startswith("error") else ""
         rows.append(f"""<tr><td><b>{e(r['name'])}</b><br><a class="meta" href="{e(r['url'])}" target="_blank" rel="noopener">{e(r['url'][:70])}</a></td>
@@ -1423,10 +1427,23 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
 <label>How we may use its content</label><select name="reuse">{opt('reuse', src_mod.REUSE, f.get('reuse', 'link_only'))}</select>
 <label><input type="checkbox" name="full_text" value="1" {'checked' if f.get('full_text') else ''}> Read the full page for facts (public-domain and OGL sources only)</label></div></div>
 <p class="row-actions"><button name="op" value="test">Test feed</button><button class="primary" name="op" value="add">Test and add</button></p></form></div>"""
+    gone = [r for r in src_mod.list_sources(db, deleted=True) if not cat or (r.get("category") or categories.default()) == cat]
+    deleted_html = ""
+    if gone:
+        drows = "".join(
+            f'<tr><td><b>{e(r["name"])}</b><br><span class="meta">{e(r["url"][:70])}</span></td><td>{cat_pill(r.get("category"))}</td>'
+            f'<td>{e(r["country"])}</td><td>{r["items"]}</td><td>{when(r.get("deleted_at"))}<br><span class="meta">{e(r.get("deleted_by") or "")}</span></td><td>'
+            + (f'<form class="inline" method="post" action="/sources/{e(r["id"])}/restore"><button>Restore</button></form>'
+               if can and categories.can_access(user, r.get("category")) else "")
+            + '</td></tr>' for r in gone)
+        deleted_html = (f'<details class="panel" style="margin-top:16px"><summary><b>Deleted feeds ({len(gone)})</b> '
+                        f'<span class="meta">not pulled; restore one to switch it back on</span></summary>'
+                        f'<table style="margin-top:10px"><tr><th>Source</th><th>Category</th><th>Country</th><th>Items</th><th>Deleted</th><th></th></tr>{drows}</table></details>')
     body = (f'<h1 class="page">Sources & pulls</h1><p class="sub">The RSS feeds the pipeline reads, the daily schedule, and a button to pull now.</p>'
             f'<div class="grid2"><div class="panel"><h2>Pull now</h2>{state}{buttons}</div>{schedule_html}</div>{add}'
             + (f'<div class="tabs">{_filter_chips(q, "/sources", "cat", [("", "All categories")] + categories.choices(), cat_counts)}</div>')
-            + f'<table><tr><th>Source</th><th>Category</th><th>Country</th><th>Kind / use</th><th>Items</th><th>Last fetch</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
+            + f'<table><tr><th>Source</th><th>Category</th><th>Country</th><th>Kind / use</th><th>Items</th><th>Last fetch</th><th>Status</th><th></th></tr>{"".join(rows)}</table>'
+            + deleted_html)
     return "Sources & pulls", body
 
 
@@ -1904,6 +1921,18 @@ class Handler(BaseHTTPRequestHandler):
                     db.rollback()
                     result = {"error": str(exc)}
                 return self._send(200, page("Sources & pulls", "sources", sources_page(db, user, result, f)[1], user))
+            if m := re.fullmatch(r"/sources/([\w.-]+)/(delete|restore)", path):
+                try:
+                    if m.group(2) == "delete":
+                        src = src_mod.delete_source(db, user, m.group(1))
+                        msg = f"Deleted {src['name']}. It won't be pulled again; restore it under Deleted feeds."
+                    else:
+                        src = src_mod.restore_source(db, user, m.group(1))
+                        msg = f"Restored {src['name']}. It's switched on and will be pulled next time."
+                except src_mod.SourceError as exc:
+                    db.rollback()
+                    return self._redirect(f"/sources?err={quote(str(exc))}")
+                return self._redirect(f"/sources?ok={quote(msg)}")
             if m := re.fullmatch(r"/sources/([\w.-]+)", path):
                 try:
                     src_mod.set_active(db, user, m.group(1), form.get("active") == "1")

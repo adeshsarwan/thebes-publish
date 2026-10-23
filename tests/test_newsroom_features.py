@@ -271,6 +271,26 @@ class PickupTest(Base):
 
 # =========================================================================
 class SourcesTest(Base):
+    def test_delete_and_restore_feed(self):
+        from newsroom import sources as sm, web
+        from pipeline import feeds
+        db = self.prepared("sources_delete")
+        maya, daniel = self.user(db, "maya"), self.user(db, "daniel")
+        with self.assertRaisesRegex(sm.SourceError, "Only editors"):
+            sm.delete_source(db, daniel, "us-fed-press")
+        items = db.fetchone("select count(*) as n from pipeline.raw_items where source_id = 'us-fed-press'")["n"]
+        sm.delete_source(db, maya, "us-fed-press")
+        self.assertNotIn("us-fed-press", [s["id"] for s in feeds.sync_sources(db)])   # not pulled, not re-added from config
+        self.assertNotIn("us-fed-press", [s["id"] for s in sm.list_sources(db)])
+        self.assertEqual(db.fetchone("select count(*) as n from pipeline.raw_items where source_id = 'us-fed-press'")["n"], items)
+        page = web.sources_page(db, maya)[1]
+        self.assertIn("Deleted feeds (1)", page)
+        url = db.fetchone("select url from pipeline.sources where id = 'us-fed-press'")["url"]
+        with self.assertRaisesRegex(sm.SourceError, "was deleted"):
+            sm.add_source(db, maya, name="Fed again", country="US", url=url, tester=lambda u: {"items": 1})
+        sm.restore_source(db, maya, "us-fed-press")
+        self.assertIn("us-fed-press", [s["id"] for s in feeds.sync_sources(db)])
+
     def test_editor_adds_and_switches_off_sources(self):
         from newsroom import sources as sm
         from pipeline import feeds
