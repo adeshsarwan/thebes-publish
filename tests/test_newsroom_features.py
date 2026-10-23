@@ -1151,3 +1151,45 @@ class HttpTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddedSourcesTest(Base):
+    """Editors add the page they checked a figure on; the checks then treat that figure as sourced."""
+
+    def test_added_source_backs_a_figure_and_override_needs_reason(self):
+        from unittest import mock
+        from newsroom import sourcepages, web, workflow as wf
+        from newsroom.store import get_story, revision_content
+        db = self.prepared("added_sources")
+        maya = self.user(db, "maya")
+        sid = db.fetchone("select id from newsroom.stories order by id limit 1")["id"]
+        content = revision_content(get_story(db, sid)["revision"])
+        content["sections"]["money_impact"] += " The capital gains allowance is £3,000 a year."
+
+        with self.assertRaisesRegex(sourcepages.SourceListError, "Not a web address"):
+            sourcepages.clean_sources('[{"url": "javascript:alert(1)"}]')
+        self.assertEqual(sourcepages.clean_sources('[{"url": "https://www.gov.uk/cgt"}]'),
+                         [{"name": "gov.uk", "title": "https://www.gov.uk/cgt", "url": "https://www.gov.uk/cgt"}])
+
+        with mock.patch.object(sourcepages, "_fetch", return_value=("", "")):
+            rep = wf.check_content(db, get_story(db, sid), content)
+        self.assertTrue(any("£3,000" in i["detail"] for i in rep["issues"]), rep["issues"])
+
+        content["sources"] = content["sources"] + [{"name": "GOV.UK", "title": "Capital Gains Tax", "url": "https://www.gov.uk/cgt-allowance"}]
+        with mock.patch.object(sourcepages, "_fetch", return_value=("CGT", "The tax-free allowance is £3,000.")) as f:
+            rep = wf.check_content(db, get_story(db, sid), content)
+            wf.check_content(db, get_story(db, sid), content)
+        self.assertFalse(any("£3,000" in i["detail"] for i in rep["issues"]), rep["issues"])
+        self.assertEqual(f.call_count, 1)                                  # page read once, then cached
+
+        # the story page asks for a reason when approving a version with errors
+        bad = dict(content, sources=content["sources"][:-1])
+        with mock.patch.object(sourcepages, "_fetch", return_value=("", "")):
+            wf.save_revision(db, sid, maya, bad)
+        page = web.story_page(db, sid, maya)[1]
+        self.assertIn("Approve anyway", page)
+        self.assertIn('name="override" value="1"', page)
+        with self.assertRaisesRegex(wf.WorkflowError, "reason"):
+            wf.perform(db, sid, "approve", maya, override=True, note="")
+        s = wf.perform(db, sid, "approve", maya, override=True, note="£3,000 checked on gov.uk")
+        self.assertEqual(s["status"], "approved")

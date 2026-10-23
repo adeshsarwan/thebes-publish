@@ -131,12 +131,20 @@ def check_content(db: Database, story: dict, content: dict) -> dict:
     research = Database.unj(story.get("research"), None) or {}
     if research.get("text"):
         source_text += "\n\n" + research["text"]
+    had_material = bool(source_text)
+    # pages an editor added as sources (e.g. a gov.uk page backing a figure)
+    from . import sourcepages
+    feed_urls = {it["url"] for it in (cluster_items(db, story["cluster_id"]) if story.get("cluster_id") else [])}
+    feed_urls |= {x.get("url") for x in research.get("sources") or []}
+    extra = sourcepages.extra_source_text(db, content.get("sources") or [], feed_urls)
+    if extra:
+        source_text += "\n\n" + extra
     if content.get("blocks"):
         rep = guardrails.check(blk.guardrail_view(content), source_text, story["country"], freeform=True,
                                category=story.get("category"))
     else:
         rep = guardrails.check(guardrail_view(content), source_text, story["country"], category=story.get("category"))
-    if not source_text:  # human-originated story: no source to compare figures against
+    if not had_material:  # human-originated story: no source to compare figures against
         rep.issues = [i for i in rep.issues if i["code"] != "unsupported_numbers"]
     return rep.as_dict()
 

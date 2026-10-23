@@ -91,3 +91,7 @@ main.wide{max-width:none;padding:0}
 .ed-hero-btn{border:1px dashed var(--line);background:none;color:var(--muted);border-radius:8px;padding:8px 14px;width:100%;cursor:pointer;font:500 13.5px var(--sans)}
 .ed-hero-btn:hover{color:var(--ink);border-color:var(--muted)}
 .ed-auto{font-size:12.5px;color:var(--muted)}.ed-auto.bad{color:var(--warn)}
+.ed-src-list{padding-left:18px;margin:6px 0}.ed-src-list li{margin-bottom:6px;overflow-wrap:anywhere}
+.ed-src-rm{border:0;background:none;color:var(--muted);cursor:pointer;padding:0 4px;font-size:12px}.ed-src-rm:hover{color:var(--bad)}
+.ed-src-add{display:grid;gap:6px;margin-top:8px}.ed-side .ed-src-add input{width:100%;font-size:13px}.ed-src-err{font-size:12.5px;color:var(--bad)}
+.ed-side .ed-src-add input[type=url]{font:inherit;font-size:13px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px}

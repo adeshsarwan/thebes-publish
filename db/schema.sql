@@ -344,6 +344,14 @@ create index if not exists story_images_story on newsroom.story_images (story_id
 
 -- Keys for the read-only Stories API (storyapi). Only a SHA-256 hash of each key is kept;
 -- the key itself is shown once, when an admin creates it on the desk's API page.
+-- Pages editors add as sources while editing: read once, used as source material by the checks.
+create table if not exists newsroom.source_pages (
+    url         text primary key,
+    title       text,
+    text        text,
+    fetched_at  timestamptz not null default now()
+);
+
 -- Editor autosave: the work in progress of one person on one story, kept every minute while they
 -- edit. Not a version: no status change, no checks. Cleared when they save a real version.
 create table if not exists newsroom.story_autosaves (

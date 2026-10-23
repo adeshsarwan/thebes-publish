@@ -593,6 +593,7 @@
     root.innerHTML = "";
     (s.blocks && s.blocks.length ? s.blocks : [{ type: "paragraph", data: {} }]).forEach(function (b) { root.appendChild(make(b)); });
     if (s.side) for (var k in s.side) { var n = document.querySelector("[form=editform][name=" + k + "]"); if (n) n.value = s.side[k]; }
+    renderSources();
     updateCount(); countSide();
   }
 
@@ -628,6 +629,50 @@
       box.value = have.join(", "); b.disabled = true; markDirty();
     });
   });
+
+  // ------------------------------------------------------------------ sources (listed at the end of the story)
+  var srcBox = document.getElementById("ed-sources");
+  var srcField = document.createElement("input");
+  srcField.type = "hidden"; srcField.name = "sources_json"; srcField.setAttribute("form", "editform");
+  srcField.value = JSON.stringify(cfg.sources || []);
+  if (srcBox) srcBox.parentNode.insertBefore(srcField, srcBox);
+  function getSources() { try { return JSON.parse(srcField.value || "[]"); } catch (e) { return []; } }
+  function setSources(list) { srcField.value = JSON.stringify(list); renderSources(); markDirty(); }
+  function renderSources() {
+    if (!srcBox) return;
+    var list = getSources();
+    srcBox.innerHTML = "";
+    var ul = el("ul", "ed-src-list");
+    list.forEach(function (x, i) {
+      var li = el("li");
+      var a = el("a"); a.href = x.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = x.title || x.url;
+      li.appendChild(a);
+      if (x.name) li.appendChild(document.createTextNode(" · " + x.name));
+      var rm = el("button", "ed-src-rm", { type: "button", title: "Remove this source" }); rm.textContent = "✕";
+      rm.addEventListener("click", function () { var l = getSources(); l.splice(i, 1); setSources(l); });
+      li.appendChild(rm); ul.appendChild(li);
+    });
+    if (!list.length) { var none = el("li", "meta"); none.textContent = "None yet"; ul.appendChild(none); }
+    srcBox.appendChild(ul);
+    var add = el("div", "ed-src-add");
+    var url = el("input", "", { type: "url", placeholder: "https://www.gov.uk/…", "aria-label": "Source web address" });
+    var name = el("input", "", { type: "text", placeholder: "Who published it, e.g. GOV.UK (optional)", "aria-label": "Source name" });
+    var title = el("input", "", { type: "text", placeholder: "Page title (optional)", "aria-label": "Page title" });
+    var btn = el("button", "", { type: "button" }); btn.textContent = "Add source";
+    var err = el("div", "ed-src-err");
+    btn.addEventListener("click", function () {
+      var u = url.value.trim();
+      if (!/^https?:\/\/[^\s\/]+\.[^\s]+$/.test(u)) { err.textContent = "Paste the page's full web address (https://…)."; return; }
+      var l = getSources();
+      if (l.some(function (x) { return x.url === u; })) { err.textContent = "That page is already a source."; return; }
+      var host = u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+      l.push({ url: u, name: name.value.trim() || host, title: title.value.trim() || u });
+      setSources(l);
+    });
+    [url, name, title].forEach(function (f) { f.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); btn.click(); } }); });
+    add.appendChild(url); add.appendChild(name); add.appendChild(title); add.appendChild(btn); add.appendChild(err);
+    srcBox.appendChild(add);
+  }
 
   // start
   load({ headline: cfg.headline, dek: cfg.dek, blocks: cfg.blocks });

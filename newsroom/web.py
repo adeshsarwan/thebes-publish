@@ -365,9 +365,13 @@ def actions_box(db: Database, story: dict, actor: dict, g: dict | None = None, h
                 continue
             opts = "".join(f'<option value="{u["id"]}" {"selected" if u["id"] == story.get("assigned_to") else ""}>{e(u["display_name"])}</option>' for u in copywriters)
             extra = f'<label>Copy editor</label><select name="assignee_id" style="width:100%">{opts}</select>'
-        if a == "approve" and errors:
-            extra = (f'<label style="color:var(--bad)">This version has {len(errors)} guardrail error(s).</label>'
-                     '<label><input type="checkbox" name="override" value="1"> Approve anyway (reason required below)</label>')
+        if a == "approve" and errors:   # approving with errors needs a reason, kept in the history
+            forms.append(f'''<form class="act" method="post" action="/story/{story_id}/action">
+<input type="hidden" name="action" value="approve"><input type="hidden" name="next" value="{e(here)}"><input type="hidden" name="override" value="1">
+<label style="color:var(--bad)">This version has {len(errors)} quality-check error(s): see Guardrails below. Fix them by editing, or approve anyway:</label>
+<label>Why it's OK to approve (required)</label><textarea name="note" required minlength="8" placeholder="e.g. £3,000 CGT allowance and £35,000 Winter Fuel threshold checked on gov.uk"></textarea>
+<button class="primary">Approve anyway</button></form>''')
+            continue
         if a == "publish" and story.get("published_version"):
             extra = '<label>Correction / update note shown on the site (optional)</label><input type="text" name="correction_note">'
         if a == "unpublish":
@@ -621,6 +625,11 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     if role == "admin" and story.get("published_version"):
         correction = ('<section><h3>Correction note</h3><input type="text" form="editform" name="correction_note" '
                       'placeholder="Shown on the site, e.g. Updated the rate figures"><p class="meta">Used with “Save &amp; update live story”.</p></section>')
+    override_html = ""
+    if role in ("editor", "admin") and any(i["severity"] == "error" for i in g.get("issues", [])):
+        override_html = ('<label class="meta" style="display:block;margin-top:8px">To approve anyway, say why it\'s OK (kept in the history):</label>'
+                         '<textarea form="editform" name="override_reason" rows="2" placeholder="e.g. £3,000 CGT allowance checked on gov.uk"></textarea>'
+                         '<p class="meta">Used by “Save &amp; approve” / “Save &amp; publish” if the checks still find errors after saving.</p>')
     rs = Database.unj(story.get("research"), None)
     research = ""
     if rs and rs.get("text"):
@@ -642,8 +651,9 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <label class="meta" style="display:block;margin-top:8px">Meta description <span id="ed-meta-count" class="ed-count"></span></label>
 <textarea form="editform" name="meta_description" rows="3" placeholder="About 155 characters for search results">{e(rev.get('meta_description') or '')}</textarea>
 {source_kw_html}</section>
-<section><h3>Sources</h3><ul>{srcs}</ul><p class="meta">Listed at the end of the story.</p></section>
-<section><h3>Checks on v{rev['version']}</h3>{issues}<p class="meta">Re-run when you save.</p></section>
+<section><h3>Sources</h3><div id="ed-sources"><ul>{srcs}</ul></div>
+<p class="meta">Listed at the end of the story. Add the page you checked a fact on: its figures then count as sourced in the checks.</p></section>
+<section><h3>Checks on v{rev['version']}</h3>{issues}<p class="meta">Re-run when you save.</p>{override_html}</section>
 {research}
 <section><h3>Shortcuts</h3><div class="keys">
 <kbd>/</kbd><span>in an empty line: add a block</span><kbd>## </kbd><span>heading</span><kbd>### </kbd><span>subheading</span>
@@ -653,7 +663,8 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 
     cfgs = categories.guardrails(story.get("category"))
     data = {"story_id": story_id, "version": story["current_version"], "headline": rev["headline"], "dek": rev.get("dek") or "",
-            "blocks": editor_blocks(rev, story.get("category")), "min_words": cfgs["min_words"], "max_words": cfgs["max_words"]}
+            "blocks": editor_blocks(rev, story.get("category")), "min_words": cfgs["min_words"], "max_words": cfgs["max_words"],
+            "sources": rev["sources"]}
     auto = db.fetchone("select base_version, state, updated_at from newsroom.story_autosaves where story_id = ? and user_id = ?",
                        (story_id, actor["id"]))
     if auto:
@@ -1753,6 +1764,12 @@ class Handler(BaseHTTPRequestHandler):
                              "keywords": seo.clean_keywords(([focus] if focus else []) + kws, 15)
                              if "seo_keywords" in form else old_seo["keywords"],
                              "source_keywords": old_seo["source_keywords"]}
+                from . import sourcepages
+                try:
+                    edited_sources = (sourcepages.fill_titles(db, sourcepages.clean_sources(form["sources_json"]))
+                                      if "sources_json" in form else rev["sources"])
+                except sourcepages.SourceListError as exc:
+                    return self._redirect(f"/story/{sid}?err={quote('Not saved: ' + str(exc))}")
                 if "blocks" in form:   # block editor
                     try:
                         body_blocks = blk.clean_blocks(form.get("blocks") or "[]")
@@ -1761,7 +1778,7 @@ class Handler(BaseHTTPRequestHandler):
                     content = {
                         "headline": form.get("headline", "").strip(), "dek": form.get("dek", "").strip(),
                         "blocks": body_blocks, "meta_description": form.get("meta_description", "").strip(),
-                        "topics": rev["topics"], "sources": rev["sources"], "seo": story_seo,
+                        "topics": rev["topics"], "sources": edited_sources, "seo": story_seo,
                     }
                 else:                  # fixed-section form (CLI and older clients)
                     content = {
@@ -1769,7 +1786,7 @@ class Handler(BaseHTTPRequestHandler):
                         "sections": {k: form.get(k, "").strip() for k in PROSE_KEYS},
                         "action_steps": _lines(form.get("action_steps", "")), "takeaways": _lines(form.get("takeaways", "")),
                         "meta_description": form.get("meta_description", "").strip(),
-                        "topics": rev["topics"], "sources": rev["sources"], "seo": story_seo,
+                        "topics": rev["topics"], "sources": edited_sources, "seo": story_seo,
                     }
                 try:
                     report = wf.save_revision(db, sid, user, content, note=form.get("note") or None)
@@ -1789,11 +1806,13 @@ class Handler(BaseHTTPRequestHandler):
                         db.rollback()
                         return self._redirect(f"/story/{sid}?err={quote(msg + ' Not sent: ' + str(exc))}")
                     return self._redirect(f"/story/{sid}?ok={quote(msg + ' Sent to an editor for review.')}")
-                if then in ("approve", "publish") and errs:
-                    return self._redirect(f"/story/{sid}?err={quote(msg + ' Not approved: fix the errors or approve with an override reason.')}")
+                reason = (form.get("override_reason") or "").strip()
+                if then in ("approve", "publish") and errs and not reason:
+                    return self._redirect(f"/story/{sid}/edit?err={quote(msg + ' Not approved: fix them, or give a reason under Checks in the sidebar to approve anyway.')}")
                 if then in ("approve", "publish"):
                     try:
-                        st = wf.perform(db, sid, "approve", user, note=form.get("note") or None)
+                        st = wf.perform(db, sid, "approve", user, note=(reason if errs else form.get("note")) or None,
+                                        override=bool(errs and reason))
                         msg = "Saved and approved."
                         if then == "publish":
                             wf.perform(db, sid, "publish", user, correction_note=form.get("correction_note") or None)

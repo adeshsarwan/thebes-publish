@@ -518,3 +518,31 @@ class AutosaveHttpTest(ImageHttpTest):
         # cross-site autosave posts are refused
         code, _ = self._post(f"/story/{self.sid}/autosave", {"state": json.dumps(state)}, headers={"Origin": "https://evil.example"})
         self.assertEqual(code, 403)
+
+
+class EditorApproveAnywayHttpTest(ImageHttpTest):
+    def test_panel_endpoints(self):   # covered by ImageHttpTest
+        pass
+
+    def test_save_and_approve_with_reason(self):
+        from unittest import mock
+        from newsroom import sourcepages
+        blocks = [{"type": "paragraph", "data": {"text": "The allowance is £3,000 and the threshold is £35,000. " * 30}}]
+        form = {"headline": "Tax story", "dek": "", "blocks": json.dumps(blocks), "then": "approve",
+                "sources_json": json.dumps([{"url": "https://example.com/a", "name": "Example", "title": "A"}])}
+        with mock.patch.object(sourcepages, "_fetch", return_value=("", "")):
+            r = self.op.open(urllib.request.Request(self.base + f"/story/{self.sid}/edit",
+                                                    data=urllib.parse.urlencode(form).encode(), method="POST"))
+            self.assertIn("/edit?err=", r.url)
+            self.assertIn("give a reason", urllib.parse.unquote(r.url))
+            page = r.read().decode()
+            self.assertIn('name="override_reason"', page)
+            self.assertIn("https://example.com/a", page)                          # the source was saved
+            form["override_reason"] = "Figures checked on gov.uk"
+            r = self.op.open(urllib.request.Request(self.base + f"/story/{self.sid}/edit",
+                                                    data=urllib.parse.urlencode(form).encode(), method="POST"))
+        self.assertIn("approved", urllib.parse.unquote(r.url).lower())
+        form["sources_json"] = json.dumps([{"url": "ftp://nope"}])
+        r = self.op.open(urllib.request.Request(self.base + f"/story/{self.sid}/edit",
+                                                data=urllib.parse.urlencode(form).encode(), method="POST"))
+        self.assertIn("Not a web address", urllib.parse.unquote(r.url))
