@@ -80,8 +80,29 @@ def _clean_urls(text_or_list) -> list[str]:
     return out
 
 
+MAX_PROMPTS = 8
+
+
+def clean_prompts(prompts: list[dict] | None) -> list[dict]:
+    """[{prompt, style, aspect, role}] with empty rows dropped; the first one is the main image."""
+    from . import media
+    out = []
+    for p in prompts or []:
+        text = re.sub(r"\s+", " ", str(p.get("prompt") or "")).strip()[:2000]
+        if not text:
+            continue
+        out.append({"prompt": text,
+                    "style": p.get("style") if p.get("style") in media.style_names() else media.style_names()[0],
+                    "aspect": p.get("aspect") if p.get("aspect") in media.cfg()["aspects"] else media.cfg()["default_aspect"],
+                    "role": "hero" if not out else "gallery"})
+    if len(out) > MAX_PROMPTS:
+        raise PickupError(f"Add at most {MAX_PROMPTS} image prompts.")
+    return out
+
+
 def request_pickup(db: Database, user: dict, cluster_id: int, *, angle: str, audience: str | list = "",
-                   notes: str = "", extra_urls="", research: bool = True) -> int:
+                   notes: str = "", extra_urls="", research: bool = True,
+                   image_prompts: list[dict] | None = None) -> int:
     if not can_pick(user):
         raise PickupError("Only editors and admins can pick up stories.")
     cluster = db.fetchone("select * from pipeline.story_clusters where id = ?", (cluster_id,))
@@ -100,10 +121,10 @@ def request_pickup(db: Database, user: dict, cluster_id: int, *, angle: str, aud
     aud = audience if isinstance(audience, list) else [a.strip() for a in (audience or "").split(",") if a.strip()]
     rid = db.insert(
         """insert into newsroom.pick_requests (cluster_id, requested_by, angle, audience, notes, extra_urls, research,
-                                               status, created_at)
-           values (?,?,?,?,?,?,?,'queued',?) returning id""",
+                                               image_prompts, status, created_at)
+           values (?,?,?,?,?,?,?,?,'queued',?) returning id""",
         (cluster_id, user["id"], angle, db.j(aud), (notes or "").strip() or None, db.j(_clean_urls(extra_urls)),
-         bool(research), utcnow()))
+         bool(research), db.j(clean_prompts(image_prompts)), utcnow()))
     db.commit()
     return rid  # type: ignore[return-value]
 
@@ -200,6 +221,10 @@ def run_request(request_id: int, client: LLMClient | None = None, *, fetch_text:
         db.execute("update newsroom.pick_requests set status = 'done', story_id = ?, finished_at = ? where id = ?",
                    (story_id, utcnow(), request_id))
         db.commit()
+        prompts = db.unj(req.get("image_prompts"), []) or []
+        if prompts:   # saved as drafts on the story; an editor generates them when wanted
+            from . import media
+            media.add_prompts(db, None, story_id, prompts)
         return story_id
     finally:
         if own:

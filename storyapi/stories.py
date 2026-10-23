@@ -13,8 +13,10 @@ from pipeline import categories
 from pipeline.db import Database
 
 MAX_PER_PAGE = 100
-LIST_FIELDS = ("id", "slug", "category", "country", "headline", "dek", "author", "byline", "published_at",
-               "updated_at", "version", "seo", "path")
+LIST_FIELDS = ("id", "slug", "category", "country", "headline", "dek", "hero_image", "author", "byline",
+               "published_at", "updated_at", "version", "seo", "path")
+IMAGE_FIELDS = ("url", "sizes", "width", "height", "alt", "caption", "credit", "credit_url", "photographer",
+                "photographer_url", "source_url", "provider", "kind")
 
 
 def iso(ts) -> str | None:
@@ -66,6 +68,20 @@ def _seo(r: dict) -> dict:
             "focus_keyword": s.get("focus_keyword") or "", "keywords": s.get("keywords") or []}
 
 
+def _images(r: dict) -> list[dict]:
+    out = []
+    for img in Database.unj(r.get("images"), []) or []:
+        item = {k: img.get(k) for k in IMAGE_FIELDS}
+        item["role"] = img.get("role")
+        item["section"] = img.get("position")
+        out.append(item)
+    return out
+
+
+def _hero(r: dict) -> dict | None:
+    return next((i for i in _images(r) if i["role"] == "hero"), None)
+
+
 def _body(r: dict, cat: str) -> tuple[str, str]:
     """(format, body_html) without the headline and standfirst, which have their own fields."""
     from newsroom import blocks as blk
@@ -76,7 +92,8 @@ def _body(r: dict, cat: str) -> tuple[str, str]:
     md = r.get("body_md") or ""
     _, rest = (md.split("\n", 1) + [""])[:2]
     rest = re.sub(r"^\s*\*(.+?)\*\s*\n", "", rest, count=1)       # the standfirst line
-    return "sections", render_markdown(rest)
+    return "sections", blk.insert_figures(render_markdown(rest), Database.unj(r.get("images"), []) or [],
+                                          categories.section_titles(cat))
 
 
 def story(r: dict, full: bool = True) -> dict:
@@ -89,6 +106,7 @@ def story(r: dict, full: bool = True) -> dict:
         "country": r["country"],
         "headline": r["headline"],
         "dek": r.get("dek"),
+        "hero_image": _hero(r),
         "author": _author(r),
         "byline": _byline(r),
         "published_at": iso(r.get("first_published_at")),
@@ -113,6 +131,7 @@ def story(r: dict, full: bool = True) -> dict:
                                                       "items": Database.unj(r.get("action_steps"), [])},
         "takeaways": None if fmt == "blocks" else {"title": titles["takeaways"],
                                                    "items": Database.unj(r.get("takeaways"), [])},
+        "images": _images(r),
         "sources": Database.unj(r.get("sources"), []),
         "topics": Database.unj(r.get("topics"), []),
         "ai_assisted": bool(r.get("ai_assisted")),

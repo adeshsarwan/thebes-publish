@@ -107,6 +107,67 @@ def _gemini_research(self, *, model: str, system: str, prompt: str, temperature:
 
 GeminiClient.research = _gemini_research
 
+INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+IMAGE_ASPECTS = ("1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+IMAGE_SIZES = ("1K", "2K", "4K")
+
+
+def find_image(data: Any) -> tuple[bytes, str] | None:
+    """Find the first image in a Gemini response, whatever its shape.
+
+    The Interactions API puts it in steps[].content[] as {"type": "image", "data": base64,
+    "mime_type": ...}; generateContent uses parts[].inlineData {data, mimeType}."""
+    import base64
+
+    if isinstance(data, dict):
+        inline = data.get("inlineData") or data.get("inline_data")
+        if isinstance(inline, dict) and inline.get("data"):
+            return base64.b64decode(inline["data"]), inline.get("mimeType") or inline.get("mime_type") or "image/png"
+        if data.get("type") == "image" and isinstance(data.get("data"), str):
+            return base64.b64decode(data["data"]), data.get("mime_type") or data.get("mimeType") or "image/png"
+        for v in data.values():
+            if isinstance(v, (dict, list)):
+                found = find_image(v)
+                if found:
+                    return found
+    elif isinstance(data, list):
+        for v in data:
+            found = find_image(v)
+            if found:
+                return found
+    return None
+
+
+def _gemini_generate_image(self, *, model: str, prompt: str, aspect: str = "16:9",
+                           size: str = "2K") -> tuple[bytes, str]:
+    """One image from Nano Banana. Returns (bytes, mime type).
+
+    Tries the Interactions API first; models that only speak generateContent get a second try there."""
+    aspect = aspect if aspect in IMAGE_ASPECTS else "16:9"
+    size = size if size in IMAGE_SIZES else "2K"
+    body = {"model": model, "input": [{"type": "text", "text": prompt}],
+            "response_format": {"type": "image", "mime_type": "image/jpeg",
+                                "aspect_ratio": aspect, "image_size": size}}
+    try:
+        data = _post_with_retries(self, INTERACTIONS_URL, body, "image")
+    except LLMError as exc:
+        if "HTTP 4" not in str(exc) or "HTTP 429" in str(exc):
+            raise
+        log.info("interactions API refused (%s); trying generateContent", str(exc)[:120])
+        data = _post_with_retries(self, GEMINI_URL.format(model=model), {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["IMAGE"],
+                                 "imageConfig": {"aspectRatio": aspect, "imageSize": size}},
+        }, "image")
+    found = find_image(data)
+    if not found:
+        reason = json.dumps(data)[:300]
+        raise LLMError(f"no image in the response (it may have been blocked): {reason}")
+    return found
+
+
+GeminiClient.generate_image = _gemini_generate_image
+
 
 def _post_with_retries(client: "GeminiClient", url: str, body: dict, task: str) -> dict:
     last_err: Exception | None = None
@@ -145,6 +206,8 @@ class MockClient:
             return self._evaluate(prompt, schema)
         if task == "write":
             return self._write(prompt)
+        if task == "choose_image":
+            return self._choose_image(prompt)
         raise LLMError(f"MockClient has no handler for task {task!r}")
 
     def research(self, *, model: str, system: str, prompt: str, temperature: float = 0.3) -> dict:
@@ -158,6 +221,28 @@ class MockClient:
         return {"text": text, "queries": [topic],
                 "sources": [{"title": "example-research.org", "url": "https://example-research.org/allocation"},
                             {"title": "example-data.gov", "url": "https://example-data.gov/yields"}]}
+
+    @staticmethod
+    def _choose_image(prompt: str) -> dict:
+        """Picks the first candidate unless the prompt marks none as usable."""
+        ids = re.findall(r"^\[(\d+)\]", prompt, re.M)
+        if not ids or "NO GOOD MATCH" in prompt:
+            return {"choice": 0, "alt": "", "reason": "no candidates"}
+        return {"choice": int(ids[0]), "inline": [int(i) for i in ids[1:2]],
+                "alt": "Illustrative photo for the story", "reason": "mock pick"}
+
+    def generate_image(self, *, model: str, prompt: str, aspect: str = "16:9", size: str = "2K") -> tuple[bytes, str]:
+        """A small solid-colour PNG, so tests exercise the whole upload path offline."""
+        import io
+        try:
+            from PIL import Image
+        except ImportError:  # pragma: no cover
+            raise LLMError("Pillow is needed for mock images")
+        w, h = (int(x) for x in (aspect if aspect in IMAGE_ASPECTS else "16:9").split(":"))
+        img = Image.new("RGB", (w * 40, h * 40), (40 + len(prompt) % 200, 90, 140))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue(), "image/png"
 
     @staticmethod
     def _evaluate(prompt: str, schema: dict | None = None) -> dict:
@@ -186,6 +271,8 @@ class MockClient:
             "angle": "What this means for household budgets, borrowers and savers",
             "audience": ["borrowers", "savers"],
             "rationale": "mock evaluation",
+            "image_query": "family budget kitchen table",
+            "image_prompt": "A household reviewing bills at a kitchen table, calculator and coffee mug, warm morning light",
         }
 
     @staticmethod

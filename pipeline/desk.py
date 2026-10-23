@@ -38,6 +38,12 @@ def eval_schema(category: str | None) -> dict:
             "angle": {"type": "STRING"},
             "audience": {"type": "ARRAY", "items": {"type": "STRING"}},
             "rationale": {"type": "STRING"},
+            "image_query": {"type": "STRING", "description":
+                            "3-6 plain words to search stock photo sites (Unsplash, Pexels) for a main image: "
+                            "a generic scene, no names of people, brands or places"},
+            "image_prompt": {"type": "STRING", "description":
+                             "One or two sentences describing an editorial illustration for this story: a generic "
+                             "scene, no text, logos or real people"},
         },
         "required": [*keys, "flags", "angle", "audience", "rationale"],
     }
@@ -122,10 +128,11 @@ def evaluate(db: Database, client: LLMClient, limit: int | None = None, countrie
         db.insert(
             """insert into pipeline.evaluations
                (cluster_id, model, wallet_impact, breadth, actionability, urgency, novelty, scores,
-                flags, impact_score, decision, angle, audience, rationale, created_at)
-               values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
+                flags, impact_score, decision, angle, audience, rationale, image_query, image_prompt, created_at)
+               values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) returning id""",
             (c["id"], model, *legacy, db.j(scores), db.j(flags), score, decision,
-             out.get("angle"), db.j(out.get("audience") or []), out.get("rationale"), utcnow()),
+             out.get("angle"), db.j(out.get("audience") or []), out.get("rationale"),
+             (out.get("image_query") or "")[:200] or None, (out.get("image_prompt") or "")[:1000] or None, utcnow()),
         )
         db.execute("update pipeline.story_clusters set status = 'evaluated', updated_at = ? where id = ?", (utcnow(), c["id"]))
         db.commit()
@@ -141,7 +148,7 @@ def commission(db: Database, countries: list[str] | None = None) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(hours=int(desk.get("lookback_hours", 72)))).isoformat()
     cf, cp = country_filter(countries, "c.country")
     rows = db.fetchall(
-        """select c.id as cluster_id, c.country, c.category, c.headline, e.impact_score, e.angle, e.audience, e.id as evaluation_id
+        """select c.id as cluster_id, c.country, c.category, c.headline, e.impact_score, e.angle, e.audience, e.image_query, e.image_prompt, e.id as evaluation_id
            from pipeline.story_clusters c
            join pipeline.evaluations e on e.id = (select max(id) from pipeline.evaluations where cluster_id = c.id)
            where c.status = 'evaluated' and e.decision = 'run' and c.created_at >= ?""" + cf + """

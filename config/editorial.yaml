@@ -34,3 +34,30 @@ autopublish:
   score_above: 60                # publish automatically when the desk impact score (0-100) is above this
   require_guardrails_pass: true  # never auto-publish a draft with guardrail errors
   responsible_editor: maya-fernandes   # slug of the editor named on auto-published stories
+
+# Images. Stock photos come from Unsplash and Pexels (shown from their servers, with credit);
+# AI images are made with Nano Banana and stored, with uploads, in Cloudflare R2.
+# Keys live in .env: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET,
+# MEDIA_BASE_URL, PEXELS_API_KEY, UNSPLASH_ACCESS_KEY (and IMAGE_MODEL to override the model).
+images:
+  model: gemini-nano-banana-2.1      # Nano Banana 2.1; about $0.05 per 2K image
+  image_size: 2K
+  default_aspect: "16:9"
+  aspects: ["16:9", "4:3", "1:1", "4:5", "3:2"]
+  max_variations: 4                  # images per click in the desk
+  widths: [1600, 1024, 640, 320]     # WebP sizes saved to R2 for generated and uploaded images
+  max_upload_mb: 15
+  # Auto-published stories get images chosen by AI: stock first, an illustration only if nothing fits.
+  auto:
+    enabled: true
+    inline_images: 1                 # in-story images besides the main image
+    stock_results: 12                # candidates the AI chooses from per image
+    generate_if_no_stock: true
+  styles:
+    illustration: >-
+      Editorial illustration for a news website. Clean, modern, flat-to-semi-flat style with a
+      restrained palette. No text, no letters, no logos, no brand names, no watermarks, and no
+      real or identifiable people.
+    photo: >-
+      Photographic style editorial image for a news website, natural light, realistic but clearly
+      a generic scene. No text, no logos, no brand names, and no real or identifiable people.

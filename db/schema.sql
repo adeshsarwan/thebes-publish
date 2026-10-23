@@ -85,6 +85,8 @@ create table if not exists pipeline.evaluations (
     angle         text,
     audience      jsonb not null default '[]',
     rationale     text,
+    image_query   text,                       -- the desk's stock-photo search words for this story
+    image_prompt  text,                       -- the desk's suggested illustration prompt
     created_at    timestamptz not null default now()
 );
 create index if not exists evaluations_cluster on pipeline.evaluations (cluster_id, created_at);
@@ -178,6 +180,7 @@ create table if not exists newsroom.pick_requests (
     notes        text,
     extra_urls   jsonb not null default '[]',
     research     boolean not null default true,
+    image_prompts jsonb not null default '[]',      -- [{prompt, aspect, role}] written at pick-up, generated on request
     status       text not null default 'queued' check (status in ('queued','running','done','failed')),
     story_id     bigint references newsroom.stories(id),
     error        text,
@@ -254,6 +257,7 @@ create table if not exists site.published_stories (
     body_md            text not null,
     blocks             jsonb,                       -- block body for stories edited by people; null for AI-format stories
     seo                jsonb,                       -- {title, description, focus_keyword, keywords}
+    images             jsonb not null default '[]', -- hero and in-story images with sizes, alt, caption, credit
     author_id          bigint not null references site.authors(id),
     ai_assisted        boolean not null default true,
     human_reviewed     boolean not null default true,       -- false = published automatically, no editor review yet
@@ -294,6 +298,45 @@ alter table pipeline.raw_items add column if not exists feed_tags jsonb not null
 alter table newsroom.story_revisions add column if not exists seo jsonb;
 alter table site.published_stories add column if not exists seo jsonb;
 create index if not exists site_updated on site.published_stories (updated_at);
+alter table newsroom.pick_requests add column if not exists image_prompts jsonb not null default '[]';
+alter table pipeline.evaluations add column if not exists image_query text;
+alter table pipeline.evaluations add column if not exists image_prompt text;
+alter table site.published_stories add column if not exists images jsonb not null default '[]';
+
+-- Images attached to newsroom stories: stock photos (hotlinked from Unsplash/Pexels with
+-- credit), AI illustrations (Nano Banana, stored in Cloudflare R2) and uploads (R2).
+-- status 'draft' = a prompt written at pick-up, not generated yet.
+create table if not exists newsroom.story_images (
+    id            bigserial primary key,
+    story_id      bigint not null references newsroom.stories(id),
+    kind          text not null check (kind in ('stock','generated','upload')),
+    provider      text not null,                 -- unsplash | pexels | gemini | upload
+    status        text not null default 'ready' check (status in ('draft','queued','generating','ready','failed','removed')),
+    role          text not null default 'gallery' check (role in ('hero','inline','gallery')),
+    position      text,                          -- inline images in fixed-section stories: the section they follow
+    prompt        text,
+    style         text,
+    aspect        text,
+    url           text,                          -- main display address
+    sizes         jsonb not null default '{}',   -- {"1600": url, "800": url, ...}
+    width         integer,
+    height        integer,
+    alt           text,
+    caption       text,
+    credit        text,                          -- e.g. "Photo by Jane Doe on Unsplash"
+    credit_url    text,
+    photographer  text,
+    photographer_url text,
+    source_url    text,                          -- the photo's page on Unsplash/Pexels
+    provider_id   text,
+    storage_keys  jsonb not null default '[]',   -- R2 object keys we own
+    model         text,
+    error         text,
+    created_by    bigint references newsroom.users(id),
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now()
+);
+create index if not exists story_images_story on newsroom.story_images (story_id, status);
 
 -- Keys for the read-only Stories API (storyapi). Only a SHA-256 hash of each key is kept;
 -- the key itself is shown once, when an admin creates it on the desk's API page.

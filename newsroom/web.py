@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from pipeline import categories, seo
 from pipeline.cluster import cluster_items
@@ -34,6 +34,7 @@ from . import schedule as sched
 from . import sources as src_mod
 from . import workflow as wf
 from . import blocks as blk
+from . import media
 from .store import PROSE_KEYS, SECTION_TITLES, decode_revision, editor_blocks, get_story
 from .users import ROLES, list_users
 
@@ -53,7 +54,9 @@ ROLE_LABELS = {"copywriter": "Copy editor", "editor": "Editor", "publisher": "Pu
 SESSION_COOKIE = "fh_session"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_FILES = {"/static/editor.js": (STATIC_DIR / "editor.js", "text/javascript; charset=utf-8"),
-                "/static/editor.css": (STATIC_DIR / "editor.css", "text/css; charset=utf-8")}
+                "/static/editor.css": (STATIC_DIR / "editor.css", "text/css; charset=utf-8"),
+                "/static/images.js": (STATIC_DIR / "images.js", "text/javascript; charset=utf-8"),
+                "/static/images.css": (STATIC_DIR / "images.css", "text/css; charset=utf-8")}
 
 
 def role_label(role: str) -> str:
@@ -148,6 +151,9 @@ h1.page{font-family:var(--serif);font-size:27px;margin:0 0 4px}.sub{color:var(--
 article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:34px 42px;font-family:var(--serif);font-size:18px;line-height:1.65}
 article h1{font-size:33px;line-height:1.15;margin:0 0 12px}article h2{font-family:var(--sans);font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin:30px 0 8px}
 article h1+p em{font-size:20px;color:var(--muted);font-style:normal}article li{margin-bottom:6px}
+figure.story-image{margin:22px 0}figure.story-image img{display:block;width:100%;height:auto;border-radius:8px;background:var(--line)}
+figure.story-image figcaption{font-family:var(--sans);font-size:13px;color:var(--muted);margin-top:6px;line-height:1.45}
+figure.story-image .credit{opacity:.85}figure.story-image .credit a{color:inherit}figure.story-image.hero{margin:6px 0 22px}
 .byline{display:flex;gap:12px;align-items:center;font-family:var(--sans);font-size:14px;margin:4px 0 20px;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .avatar{width:40px;height:40px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px;flex:none}
 article.blocks h2{font-family:var(--serif);font-size:26px;line-height:1.25;text-transform:none;letter-spacing:0;color:var(--ink);margin:34px 0 10px}
@@ -505,7 +511,7 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
               if viewing_old else "")
     on_site = (f' · <a href="/site/{quote(story["slug"])}">View on site</a>' if site_row else "")
     body = f"""<p class="sub"><a href="/">← Stories</a> · <a href="/story/{story_id}/history">History &amp; versions</a>{on_site} · slug <code>{e(story['slug'])}</code></p>
-{banner}<div class="layout"><div>{article_html(rev)}{research_html}{origin_timeline(db, story)}</div>
+{banner}<div class="layout"><div>{article_html(rev, media.snapshot(db, story_id), story.get("category"))}{images_panel(db, story, actor) if not viewing_old else ""}{research_html}{origin_timeline(db, story)}</div>
 <aside>{actions_html}<div class="box"><h3>Story</h3><div class="kv">{info}</div>{move_category_form(story, actor)}</div>
 <div class="box"><h3>Guardrails · v{rev['version']}</h3>{issues_html}<div class="kv" style="margin-top:10px">{kv}</div></div>
 {seo_box(rev.get("seo"), rev.get("meta_description"), rev["headline"])}{desk}<div class="box"><h3>Recent activity</h3><div class="timeline">{tl}</div></div></aside></div>"""
@@ -623,6 +629,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
                     + (f"<ul>{rsrc}</ul>" if rsrc else "") + "</details></section>")
     side = f"""<aside class="ed-side">
 <section><h3>Story</h3><div class="kv">{status_kv}</div><p style="margin:10px 0 0"><a href="/story/{story_id}">Story page &amp; actions</a> · <a href="/story/{story_id}/history">History</a></p></section>
+{images_panel(db, story, actor, "editor")}
 <section><h3>What did you change?</h3><input type="text" form="editform" name="note" placeholder="Saved with this version, e.g. Tightened the intro"></section>
 {correction}
 <section><h3>SEO</h3>
@@ -666,13 +673,67 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     return "Edit · " + rev["headline"], body
 
 
-def article_html(rev: dict) -> str:
-    """A version as an article: block versions render their blocks, AI versions their markdown."""
+def images_state(db: Database, story: dict, actor: dict | None) -> dict:
+    """Everything the images panel needs, as JSON."""
+    imgs = media.list_images(db, story["id"])
+    site = db.fetchone("select status, images from site.published_stories where story_id = ?", (story["id"],))
+    live = bool(site and site["status"] == "live")
+    on_site = Database.unj(site["images"], []) if site else []
+    current = media.snapshot(db, story["id"])
+    sig = lambda xs: [(i.get("id"), i.get("role"), i.get("alt"), i.get("caption"), i.get("position"), i.get("url")) for i in xs]  # noqa: E731
+    return {"images": imgs, "status": media.status(), "can_manage": media.can_manage(actor, story),
+            "can_sync": bool(actor and live and actor["role"] in ("editor", "publisher", "admin")),
+            "live": live, "site_differs": live and sig(current) != sig(on_site),
+            "busy": any(i["status"] in ("queued", "generating") for i in imgs)}
+
+
+def images_panel(db: Database, story: dict, actor: dict | None, mode: str = "page") -> str:
+    """Images for a story: stock search, AI generation, uploads. Drawn by /static/images.js."""
+    if not actor or not categories.can_access(actor, story.get("category")):
+        return ""
+    rev = story.get("revision") or {}
+    ev = None
+    if story.get("cluster_id"):
+        ev = db.fetchone("select image_query, image_prompt from pipeline.evaluations where cluster_id = ? order by id desc limit 1",
+                         (story["cluster_id"],))
+    c = media.cfg()
+    sections = [] if rev.get("blocks") else [[k, t] for k, t in categories.section_titles(story.get("category")).items()
+                                              if k in categories.SECTION_KEYS]
+    boot = {"story_id": story["id"], "mode": mode, "state": images_state(db, story, actor),
+            "query": (ev or {}).get("image_query") or rev.get("headline") or "",
+            "prompt": (ev or {}).get("image_prompt") or "", "styles": media.style_names(), "aspects": c["aspects"],
+            "default_aspect": c["default_aspect"], "max_variations": c["max_variations"], "model": c["model"],
+            "max_upload_mb": c["max_upload_mb"], "sections": sections, "blocks": bool(rev.get("blocks")) or mode == "editor"}
+    data = json.dumps(boot, default=str).replace("<", "\\u003c")
+    tag = "section" if mode == "editor" else "div"
+    cls = "img-panel img-editor" if mode == "editor" else "panel img-panel img-page"
+    return (f'<link rel="stylesheet" href="/static/images.css"><{tag} id="img-panel" class="{cls}">'
+            f'<h{"3" if mode == "editor" else "2"}>Images</h{"3" if mode == "editor" else "2"}>'
+            f'<div class="img-body"><p class="meta">Loading images…</p></div></{tag}>'
+            f'<script id="img-data" type="application/json">{data}</script><script src="/static/images.js" defer></script>')
+
+
+def hero_html(images: list[dict] | None) -> str:
+    hero = next((i for i in images or [] if i.get("role") == "hero"), None)
+    return blk.figure_html(hero, "hero") if hero else ""
+
+
+def article_html(rev: dict, images: list[dict] | None = None, category: str | None = None) -> str:
+    """A version as an article: block versions render their blocks, AI versions their markdown.
+    `images` (hero + in-story) are shown where the website would put them."""
     if rev.get("blocks"):
         dek = f'<p class="dek">{e(rev["dek"])}</p>' if rev.get("dek") else ""
-        return (f'<article class="blocks"><h1>{e(rev["headline"])}</h1>{dek}{blk.render_blocks(rev["blocks"])}'
+        return (f'<article class="blocks"><h1>{e(rev["headline"])}</h1>{dek}{hero_html(images)}{blk.render_blocks(rev["blocks"])}'
                 f'{blk.render_sources(rev.get("sources") or [])}</article>')
-    return f"<article>{render_markdown(rev['body_md'])}</article>"
+    md = rev["body_md"]
+    title_line, rest = (md.split("\n", 1) + [""])[:2]
+    dek_html = ""
+    m = re.match(r"\s*\*(.+?)\*\s*\n", rest)
+    if m:
+        dek_html = f"<p><em>{_inline(m.group(1))}</em></p>"
+        rest = rest[m.end():]
+    body = blk.insert_figures(render_markdown(rest), images or [], categories.section_titles(category))
+    return f"<article><h1>{_inline(title_line.lstrip('# '))}</h1>{dek_html}{hero_html(images)}{body}</article>"
 
 
 def diff_link(story_id: int, version: int) -> str:
@@ -859,6 +920,40 @@ def scoring_page(db: Database, q: dict, user: dict | None = None) -> tuple[str, 
     return "Scoring desk", body
 
 
+PROMPT_ROWS = 4
+
+
+def _options(values, selected, labels: dict | None = None) -> str:
+    return "".join(f'<option value="{e(v)}"{" selected" if v == selected else ""}>{e((labels or {}).get(v, v))}</option>'
+                   for v in values)
+
+
+def image_prompt_rows(f: dict, suggested: str, saved=None) -> str:
+    """Image prompt rows for the pick-up form. They become draft images on the story; nothing is generated yet."""
+    c = media.cfg()
+    saved = Database.unj(saved, []) or []
+    rows = []
+    for i in range(1, PROMPT_ROWS + 1):
+        prev = saved[i - 1] if i - 1 < len(saved) else {}
+        text = f.get(f"img_prompt_{i}", prev.get("prompt", suggested if i == 1 else ""))
+        style = f.get(f"img_style_{i}", prev.get("style", media.style_names()[0]))
+        aspect = f.get(f"img_aspect_{i}", prev.get("aspect", c["default_aspect"]))
+        rows.append(f'<div class="img-prompt-row"><textarea name="img_prompt_{i}" rows="2" placeholder="'
+                    f'{"Main image: describe the scene" if i == 1 else "Another image for inside the story"}">{e(text)}</textarea>'
+                    f'<select name="img_style_{i}" aria-label="Style">{_options(media.style_names(), style)}</select>'
+                    f'<select name="img_aspect_{i}" aria-label="Shape">{_options(c["aspects"], aspect)}</select></div>')
+    more = "".join(rows[1:])
+    return (f'<fieldset class="img-prompts"><legend>Image prompts (optional)</legend>'
+            f'<p class="meta">Saved on the story as drafts. Generate them from the story when you want them '
+            f'(about $0.05 each with {e(c["model"])}). You can also search stock photos there.</p>'
+            f'{rows[0]}<details><summary>More image prompts</summary>{more}</details></fieldset>')
+
+
+def _prompts_from_form(form: dict) -> list[dict]:
+    return [{"prompt": form.get(f"img_prompt_{i}", ""), "style": form.get(f"img_style_{i}"),
+             "aspect": form.get(f"img_aspect_{i}")} for i in range(1, PROMPT_ROWS + 1)]
+
+
 def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = None,
                 error: str | None = None) -> tuple[str, str] | None:
     c = db.fetchone("select * from pipeline.story_clusters where id = ?", (cluster_id,))
@@ -912,6 +1007,7 @@ def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = N
 <label>Extra sources (optional, one web address per line)</label>
 <textarea name="urls" rows="3" placeholder="https://...">{e(f.get('urls', ''))}</textarea>
 <label><input type="checkbox" name="research" value="1" {checked}> Research with AI using live Google Search (recommended)</label>
+{image_prompt_rows(f, ev.get("image_prompt") or "", (req or {}).get("image_prompts") if req and req["status"] == "failed" else None)}
 <p><button class="primary">Research and draft</button>
 <span class="meta">The draft arrives in "Needs an editor", marked Editor pick. It is never published automatically.</span></p></form>"""
     body = (f'<p class="sub"><a href="/scoring">← Scoring desk</a></p><h1 class="page">Pick up: {e(c["headline"])}</h1>'
@@ -1015,12 +1111,14 @@ def site_feed_page(site_db: Database, slug: str | None = None, db: Database | No
         byline = (f'<div class="byline"><div class="avatar">{initials(s["display_name"])}</div><div>{credit}'
                   f'<br><span class="meta">Published {when(s["first_published_at"])}{updated}</span></div></div>')
         site_blocks = Database.unj(s.get("blocks"), None)
+        site_images = Database.unj(s.get("images"), []) or []
         if site_blocks:   # a version written in the block editor: serve the blocks
             dek = f'<p class="dek">{e(s["dek"])}</p>' if s.get("dek") else ""
-            art = (f'<article class="blocks"><h1>{e(s["headline"])}</h1>{dek}{byline}{corr}{blk.render_blocks(site_blocks)}'
+            art = (f'<article class="blocks"><h1>{e(s["headline"])}</h1>{dek}{byline}{corr}{hero_html(site_images)}{blk.render_blocks(site_blocks)}'
                    f'{blk.render_sources(Database.unj(s.get("sources"), []))}<div class="disclosure">{e(s["disclosure"])}</div></article>')
         else:             # AI format
-            art = (f'<article><h1>{_inline(title_line.lstrip("# "))}</h1>{dek_html}{byline}{corr}{render_markdown(rest)}'
+            art = (f'<article><h1>{_inline(title_line.lstrip("# "))}</h1>{dek_html}{byline}{corr}{hero_html(site_images)}'
+                   f'{blk.insert_figures(render_markdown(rest), site_images, categories.section_titles(s.get("category")))}'
                    f'<div class="disclosure">{e(s["disclosure"])}</div></article>')
         body = (f'<p class="sub"><a href="/site">← Site feed</a> · rendered from <code>site.published_stories</code> '
                 f'via the read-only <code>site</code> connection</p>{art}')
@@ -1364,6 +1462,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _json(self, code: int, payload) -> None:
+        self._send(code, json.dumps(payload, default=str), "application/json; charset=utf-8")
+
+    def _send_bytes(self, data: bytes, ctype: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _redirect(self, location: str, cookie: str | None = None) -> None:
         self.send_response(303)
         self.send_header("Location", location)
@@ -1408,6 +1518,60 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return self.headers.get("Host") in allowed and (not origin or urlsplit(origin).netloc in allowed)
 
+    def _image_post(self, db, user, path: str, form: dict, upload) -> None:
+        """JSON endpoints behind the images panel."""
+        try:
+            if upload:
+                sid = int(upload.group(1))
+                length = int(self.headers.get("Content-Length") or 0)
+                limit = int(media.cfg()["max_upload_mb"]) * 1024 * 1024
+                if length > limit:
+                    self.rfile.read(min(length, limit + 1))
+                    return self._json(413, {"error": f"That file is over {media.cfg()['max_upload_mb']} MB."})
+                data = self.rfile.read(length)
+                qs = parse_qs(urlsplit(self.path).query)
+                one = lambda k: unquote(qs.get(k, [""])[0])  # noqa: E731
+                iid = media.add_upload(db, user, sid, data, filename=unquote(self.headers.get("X-Filename") or ""),
+                                       role=one("role") or "gallery", alt=one("alt"), credit=one("credit"))
+                return self._json(200, {"ok": True, "id": iid})
+            if m := re.fullmatch(r"/story/(\d+)/images/(\w+)", path):
+                sid, op = int(m.group(1)), m.group(2)
+                if op == "stock":
+                    iid = media.add_stock(db, user, sid, form.get("provider", ""), form.get("provider_id", ""),
+                                          role=form.get("role") or "gallery", alt=form.get("alt", ""))
+                    return self._json(200, {"ok": True, "id": iid})
+                if op == "generate":
+                    ids = media.queue_generation(
+                        db, user, sid, form.get("prompt", ""), style=form.get("style"), aspect=form.get("aspect"),
+                        count=int(form["count"]) if form.get("count", "").isdigit() else 1, role=form.get("role") or "gallery",
+                        draft_id=int(form["draft_id"]) if form.get("draft_id", "").isdigit() else None)
+                    media.start_background(ids)
+                    return self._json(200, {"ok": True, "ids": ids})
+                if op == "prompt":
+                    media._check(db, user, sid)
+                    ids = media.add_prompts(db, user, sid,
+                                            [{"prompt": form.get("prompt", ""), "style": form.get("style"),
+                                              "aspect": form.get("aspect"), "role": "gallery"}])
+                    return self._json(200, {"ok": True, "ids": ids})
+                if op == "sync":
+                    n = wf.sync_site_images(db, sid, user)
+                    return self._json(200, {"ok": True, "count": n})
+                return self._json(404, {"error": "unknown action"})
+            if m := re.fullmatch(r"/images/(\d+)/(\w+)", path):
+                iid, op = int(m.group(1)), m.group(2)
+                if op == "update":
+                    fields = {k: form[k] for k in ("role", "alt", "caption", "credit", "prompt") if k in form}
+                    if "position" in form:
+                        fields["position"] = form["position"]
+                    return self._json(200, {"ok": True, "image": media.update_image(db, user, iid, **fields)})
+                if op == "remove":
+                    media.remove_image(db, user, iid)
+                    return self._json(200, {"ok": True})
+            return self._json(404, {"error": "unknown action"})
+        except (media.MediaError, wf.WorkflowError, ValueError) as exc:
+            db.rollback()
+            return self._json(400, {"error": str(exc)})
+
     def _render(self, db, user, out, active, q=None, code=200, refresh=None, wide=False):
         if out is None:
             self._send(404, page("Not found", active, '<div class="empty">Not found.</div>', user))
@@ -1422,6 +1586,12 @@ class Handler(BaseHTTPRequestHandler):
         if path in STATIC_FILES:
             f, ctype = STATIC_FILES[path]
             return self._send(200, f.read_text(encoding="utf-8"), ctype)
+        if path.startswith("/media/"):
+            st = media.local_storage()
+            fp = st.path_for(path[len("/media/"):]) if st else None
+            if not fp:
+                return self._send(404, "not found", "text/plain")
+            return self._send_bytes(fp.read_bytes(), "image/webp" if fp.suffix == ".webp" else "application/octet-stream")
         db = connect("newsroom")
         try:
             user = auth.user_for_session(db, self._token())
@@ -1445,6 +1615,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._render(db, user, history_page(db, int(m.group(1)), user), "queue", q)
             if m := re.fullmatch(r"/story/(\d+)/diff/(\d+)", path):
                 return self._render(db, user, diff_page(db, int(m.group(1)), int(m.group(2)), user), "queue", q)
+            if m := re.fullmatch(r"/story/(\d+)/images\.json", path):
+                story = get_story(db, int(m.group(1)))
+                if not story or not categories.can_access(user, story.get("category")):
+                    return self._json(404, {"error": "not found"})
+                return self._json(200, images_state(db, story, user))
+            if m := re.fullmatch(r"/story/(\d+)/images/search", path):
+                story = get_story(db, int(m.group(1)))
+                if not story or not media.can_manage(user, story):
+                    return self._json(403, {"error": "You can't change images on this story."})
+                one = lambda k, d="": q.get(k, [d])[0]  # noqa: E731
+                try:
+                    return self._json(200, media.search_stock(one("q"), one("provider", "all"),
+                                                              int(one("page", "1") or 1) if one("page", "1").isdigit() else 1,
+                                                              24, one("orientation", "landscape")))
+                except media.MediaError as exc:
+                    return self._json(400, {"error": str(exc)})
             if path == "/scoring":
                 return self._render(db, user, scoring_page(db, q, user), "scoring", q)
             if path == "/scoring/items":
@@ -1478,7 +1664,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._same_origin():
             return self._send(403, "forbidden", "text/plain")
         path = urlsplit(self.path).path
-        form = _form(self)
+        upload = re.fullmatch(r"/story/(\d+)/images/upload", path)
+        form = {} if upload else _form(self)
         db = connect("newsroom")
         try:
             if path == "/login":
@@ -1581,6 +1768,9 @@ class Handler(BaseHTTPRequestHandler):
                     msg += " Readers still see the published version until this is approved and republished."
                 return self._redirect(f"/story/{sid}?{'err' if errs else 'ok'}={quote(msg)}")
 
+            if upload or re.fullmatch(r"/(story/\d+/images/\w+|images/\d+/\w+)", path):
+                return self._image_post(db, user, path, form, upload)
+
             if path == "/api/keys":
                 from storyapi import keys as api_keys
                 try:
@@ -1643,10 +1833,12 @@ class Handler(BaseHTTPRequestHandler):
             if m := re.fullmatch(r"/scoring/(\d+)/pickup", path):
                 cid = int(m.group(1))
                 f = {k: form.get(k, "") for k in ("angle", "audience", "notes", "urls")}
+                f.update({k: v for k, v in form.items() if k.startswith("img_")})
                 f["research"] = "1" if form.get("research") == "1" else "0"
                 try:
                     rid = pick_mod.request_pickup(db, user, cid, angle=f["angle"], audience=f["audience"], notes=f["notes"],
-                                                  extra_urls=f["urls"], research=f["research"] == "1")
+                                                  extra_urls=f["urls"], research=f["research"] == "1",
+                                                  image_prompts=_prompts_from_form(form))
                 except pick_mod.PickupError as exc:
                     db.rollback()
                     out = pickup_page(db, user, cid, form=f, error=str(exc))

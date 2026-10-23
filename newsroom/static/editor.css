@@ -75,3 +75,12 @@ main.wide{max-width:none;padding:0}
   .ed-canvas{padding:22px 26px 60px}.ed-title{font-size:30px}.blk-plus{left:-20px}}
 .kw-list{display:flex;flex-wrap:wrap;gap:4px}.kw-add{font:12px var(--sans);border:1px dashed var(--line);background:none;color:var(--ink);border-radius:999px;padding:2px 8px;cursor:pointer}
 .kw-add:disabled{opacity:.45;cursor:default}
+
+/* image blocks */
+.blk-img{margin:14px 0;outline:none;font-family:var(--sans)}
+.blk-img img{display:block;width:100%;height:auto;border-radius:8px;background:var(--line)}
+.blk-img:focus img{box-shadow:0 0 0 3px var(--accent)}
+.blk-img .blk-cap{font-size:13.5px;margin-top:6px}
+.blk-credit{font-size:12px;color:var(--muted)}
+.blk .blk-alt{width:100%;margin-top:6px;font:12.5px var(--sans);color:var(--ink);background:var(--bg);border:1px dashed var(--line);border-radius:6px;padding:4px 8px}
+.blk .blk-alt:placeholder-shown{border-color:var(--warn)}

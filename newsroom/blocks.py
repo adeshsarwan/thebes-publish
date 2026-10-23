@@ -13,7 +13,11 @@ in later without migrating data):
     {"type": "quote",     "data": {"text": "...", "caption": "..."}}
     {"type": "delimiter", "data": {}}
     {"type": "table",     "data": {"withHeadings": true, "content": [["...", ...], ...]}}
+    {"type": "image",     "data": {"url": "...", "alt": "...", "caption": "...", "credit": "...",
+                                   "credit_url": "...", "image_id": 12, "width": 1600, "height": 900,
+                                   "sizes": {"1600": "...", "640": "..."}}}
 
+Image addresses must be on our media domain or the Unsplash/Pexels CDNs.
 Inline HTML is limited to <b>, <i>, <a href> and <br>; everything else is
 stripped on save and again when rendering.
 """
@@ -25,7 +29,7 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-TYPES = ("paragraph", "header", "list", "quote", "delimiter", "table")
+TYPES = ("paragraph", "header", "list", "quote", "delimiter", "table", "image")
 MAX_BLOCKS = 400
 MAX_TEXT = 20_000
 MAX_TABLE = 40          # rows and columns
@@ -209,9 +213,64 @@ def clean_blocks(raw) -> list[dict]:
                 width = max(len(r) for r in rows)
                 rows = [r + [""] * (width - len(r)) for r in rows]
                 out.append({"type": t, "data": {"withHeadings": bool(d.get("withHeadings")), "content": rows}})
+        elif t == "image":
+            img = clean_image(d)
+            if img:
+                out.append({"type": t, "data": img})
     while out and out[-1]["type"] == "delimiter":
         out.pop()
     return out
+
+
+def _plain(value, limit: int) -> str:
+    return re.sub(r"\s+", " ", inline_text(clean_inline(str(value or "")))).strip()[:limit]
+
+
+def clean_image(d: dict) -> dict | None:
+    """An image block's data, or None if its address isn't one we serve or credit properly."""
+    from .media import allowed_image_url
+    url = str(d.get("url") or "").strip()
+    if not allowed_image_url(url):
+        return None
+    out = {"url": url, "alt": _plain(d.get("alt"), 300), "caption": clean_inline(str(d.get("caption") or ""))[:1000],
+           "credit": _plain(d.get("credit"), 200)}
+    cu = _safe_href(str(d.get("credit_url") or ""))
+    if cu:
+        out["credit_url"] = cu
+    for k in ("image_id", "width", "height"):
+        if isinstance(d.get(k), int) and d[k] > 0:
+            out[k] = d[k]
+    sizes = d.get("sizes")
+    if isinstance(sizes, dict):
+        ok = {str(w): u for w, u in sizes.items() if str(w).isdigit() and isinstance(u, str) and allowed_image_url(u)}
+        if ok:
+            out["sizes"] = dict(list(ok.items())[:8])
+    return out
+
+
+def figure_html(img: dict, cls: str = "") -> str:
+    """<figure> for an image block or a published image (both use url/alt/caption/credit/sizes)."""
+    from .media import allowed_image_url
+    url = img.get("url") or ""
+    if not allowed_image_url(url):
+        return ""
+    sizes = img.get("sizes") or {}
+    srcset = ", ".join(f'{html.escape(u, quote=True)} {w}w' for w, u in sorted(sizes.items(), key=lambda x: int(x[0]))
+                       if allowed_image_url(u))
+    dims = (f' width="{int(img["width"])}" height="{int(img["height"])}"'
+            if isinstance(img.get("width"), int) and isinstance(img.get("height"), int) else "")
+    tag = (f'<img src="{html.escape(url, quote=True)}" alt="{html.escape(img.get("alt") or "", quote=True)}"'
+           f'{dims} loading="lazy" decoding="async"'
+           + (f' srcset="{srcset}" sizes="(max-width: 800px) 100vw, 800px"' if srcset else "") + ">")
+    cap = _render_inline(img.get("caption") or "") if img.get("caption") else ""
+    credit = html.escape(img.get("credit") or "")
+    cu = _safe_href(img.get("credit_url") or "") if credit else None
+    if credit and cu:
+        credit = f'<a target="_blank" rel="noopener" href="{html.escape(cu, quote=True)}">{credit}</a>'
+    fc = ""
+    if cap or credit:
+        fc = f'<figcaption>{cap}{" " if cap and credit else ""}' + (f'<span class="credit">{credit}</span>' if credit else "") + "</figcaption>"
+    return f'<figure class="story-image{(" " + cls) if cls else ""}">{tag}{fc}</figure>'
 
 
 def _item_text(item) -> str:
@@ -270,6 +329,10 @@ def blocks_markdown(content: dict) -> str:
             md += [f"> {inline_markdown(d['text'])}"] + ([f"> — {inline_markdown(d['caption'])}"] if d.get("caption") else []) + [""]
         elif b["type"] == "delimiter":
             md += ["---", ""]
+        elif b["type"] == "image":
+            md += [f"![{d.get('alt', '').replace(']', '')}]({d['url']})"]
+            note = " ".join(x for x in (inline_markdown(d.get("caption") or ""), d.get("credit") or "") if x)
+            md += ([f"*{note}*"] if note else []) + [""]
         elif b["type"] == "table":
             rows = [[inline_markdown(c).replace("|", "\\|") for c in r] for r in d["content"]]
             head = rows[0] if d.get("withHeadings") else [""] * len(rows[0])
@@ -302,6 +365,8 @@ def render_blocks(blocks: list[dict]) -> str:
             out.append(f"<blockquote><p>{_render_inline(d.get('text'))}</p>{cap}</blockquote>")
         elif t == "delimiter":
             out.append("<hr>")
+        elif t == "image":
+            out.append(figure_html(d))
         elif t == "table":
             rows = d.get("content") or []
             if not rows:
@@ -338,6 +403,8 @@ def _block_text(b: dict) -> str:
         return inline_text(d["text"]) + (" " + inline_text(d["caption"]) if d.get("caption") else "")
     if b["type"] == "table":
         return "\n".join(" ".join(inline_text(c) for c in r) for r in d["content"])
+    if b["type"] == "image":
+        return inline_text(d.get("caption") or "")
     return ""
 
 
@@ -366,3 +433,25 @@ def guardrail_view(content: dict) -> dict:
 def word_count(content: dict) -> int:
     v = guardrail_view(content)
     return len(" ".join([v["headline"], v["dek"] or "", v["body"]]).split())
+
+
+def insert_figures(body_html: str, images: list[dict], titles: dict) -> str:
+    """Put in-story images into a fixed-section story's HTML, after the section each one names
+    (before the next heading); images with no section go after the first section."""
+    inline = [i for i in images or [] if i.get("role") == "inline"]
+    if not inline:
+        return body_html
+    heads = [m.start() for m in re.finditer(r"<h2[ >]", body_html)]
+    for img in reversed(inline):
+        title = titles.get(img.get("position") or "") if img.get("position") else None
+        at = None
+        if title:
+            m = re.search(r"<h2[^>]*>\s*(?:" + "|".join(re.escape(html.escape(title, quote=q)) for q in (True, False)) + r")\s*</h2>", body_html)
+            if m:
+                nxt = re.search(r"<h2[ >]", body_html[m.end():])
+                at = m.end() + nxt.start() if nxt else len(body_html)
+        if at is None:
+            at = heads[1] if len(heads) > 1 else len(body_html)
+        body_html = body_html[:at] + figure_html(img) + "\n" + body_html[at:]
+        heads = [m.start() for m in re.finditer(r"<h2[ >]", body_html)]
+    return body_html

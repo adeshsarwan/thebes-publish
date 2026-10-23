@@ -126,7 +126,7 @@ def run_pull(countries=None, *, trigger: str = "manual", client=None, fetch_text
             _write_status(info)
             ndb = connect("newsroom")
             try:
-                result["autopublish"] = workflow.autopublish(ndb, countries)
+                result["autopublish"] = workflow.autopublish(ndb, countries, client)
             finally:
                 ndb.close()
             info.update(state="finished", finished_at=utcnow(), summary=summarise(result))

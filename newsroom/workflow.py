@@ -34,6 +34,7 @@ from pipeline.settings import get_settings
 from pipeline.writer import build_source_material
 
 from . import blocks as blk
+from . import media as _media
 from .store import add_revision, get_story, guardrail_view, log_event, revision_content
 
 
@@ -295,15 +296,15 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
     db.execute(
         """insert into site.published_stories
            (story_id, slug, country, category, headline, dek, sections, takeaways, action_steps, topics, sources,
-            meta_description, body_md, blocks, seo, author_id, ai_assisted, human_reviewed, disclosure, version, status,
+            meta_description, body_md, blocks, seo, images, author_id, ai_assisted, human_reviewed, disclosure, version, status,
             correction_note, first_published_at, updated_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'live',?,?,?)
            on conflict (story_id) do update set slug = excluded.slug, country = excluded.country,
              category = excluded.category,
              headline = excluded.headline, dek = excluded.dek, sections = excluded.sections,
              takeaways = excluded.takeaways, action_steps = excluded.action_steps, topics = excluded.topics,
              sources = excluded.sources, meta_description = excluded.meta_description, body_md = excluded.body_md,
-             blocks = excluded.blocks, seo = excluded.seo,
+             blocks = excluded.blocks, seo = excluded.seo, images = excluded.images,
              author_id = excluded.author_id, ai_assisted = excluded.ai_assisted,
              human_reviewed = excluded.human_reviewed, disclosure = excluded.disclosure,
              version = excluded.version, status = 'live', correction_note = excluded.correction_note,
@@ -311,9 +312,24 @@ def publish_to_site(db: Database, story: dict, correction_note: str | None = Non
         (story["id"], story["slug"], story["country"], story.get("category") or categories.default(), content["headline"], content.get("dek"),
          db.j(content["sections"]), db.j(content["takeaways"]), db.j(content["action_steps"]),
          db.j(content["topics"]), db.j(content["sources"]), content.get("meta_description"), rev["body_md"],
-         db.j(content["blocks"]) if content.get("blocks") else None, db.j(site_seo(content)), author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed, story.get("category")),
+         db.j(content["blocks"]) if content.get("blocks") else None, db.j(site_seo(content)),
+         db.j(_media.snapshot(db, story["id"])), author["id"], ai_assisted, human_reviewed, disclosure_for(author, ai_assisted, human_reviewed, story.get("category")),
          story["current_version"], correction_note, now, now),
     )
+
+
+def sync_site_images(db: Database, story_id: int, user: dict) -> int:
+    """Send a live story's current images to the site without republishing the text."""
+    _require(user and user["role"] in {"editor", "publisher", "admin"}, "only editors and publishers can update live images")
+    story = get_story(db, story_id)
+    _require(story is not None and story.get("live"), "the story isn't live")
+    _require(categories.can_access(user, story.get("category")), "you don't work on this category")
+    imgs = _media.snapshot(db, story_id)
+    db.execute("update site.published_stories set images = ?, updated_at = ? where story_id = ?",
+               (db.j(imgs), utcnow(), story_id))
+    log_event(db, story_id, "images_live", note=f"{len(imgs)} image(s) sent to the site", actor_id=user["id"])
+    db.commit()
+    return len(imgs)
 
 
 def site_seo(content: dict) -> dict:
@@ -325,7 +341,7 @@ def site_seo(content: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- auto-publish
-def autopublish(db: Database, countries: list[str] | None = None) -> dict:
+def autopublish(db: Database, countries: list[str] | None = None, client=None) -> dict:
     """Publish untouched AI drafts that clear the score and guardrail bars.
 
     Only first-version drafts still in `ai_draft` qualify, so anything an editor
@@ -334,7 +350,8 @@ def autopublish(db: Database, countries: list[str] | None = None) -> dict:
     that it was published automatically without an editor's review.
     """
     cfg = get_settings().editorial.get("autopublish") or {}
-    stats: dict = {"published": 0, "below_score": 0, "guardrail_errors": 0, "category_off": 0, "stories": []}
+    stats: dict = {"published": 0, "below_score": 0, "guardrail_errors": 0, "category_off": 0, "stories": [],
+                   "images": 0, "image_errors": 0}
     if not cfg.get("enabled"):
         stats["disabled"] = True
         return stats
@@ -396,6 +413,10 @@ def autopublish(db: Database, countries: list[str] | None = None) -> dict:
             stats["error"] = f"no usable responsible editor for {categories.name(cat)}"
             continue
         story["editor_id"] = editor["id"]
+        from . import media   # images first, so the published copy includes them; never blocks publishing
+        pics = media.auto_images(db, story, client)
+        stats["images"] += int(bool(pics.get("hero"))) + int(pics.get("inline") or 0)
+        stats["image_errors"] += int(bool(pics.get("error")))
         publish_to_site(db, story, human_reviewed=False)
         db.execute(
             """update newsroom.stories set status = 'published', editor_id = ?, published_version = ?,

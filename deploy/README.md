@@ -128,6 +128,44 @@ A separate, read-only service gives developers the published stories as JSON. It
    This installs the service, gets the API's certificate and sets up its site in nginx. It also refreshes the update command, so later deploys restart the API too. If Let's Encrypt can't verify the domain, use the same grey-cloud trick as for the desk.
 5. Check it: `curl https://storyhub-api.thebesads.com/v1` lists the endpoints. `/v1/stories` without a key answers **401**.
 
+## Images (stock photos, AI images, uploads)
+
+Each story can have many images: one **main image**, images **in the story**, and spares. They come from three places:
+
+- **Stock photos** from Unsplash and Pexels. Editors search them on the story page or in the editor. The photos are shown from the providers' own servers with a credit to the photographer, as their licences ask; we only keep a reference.
+- **AI images** made with Nano Banana 2.1 at 2K, about $0.05 each. Prompts written at pick-up are saved on the story as drafts, and someone clicks **Generate** when they want them.
+- **Uploads** of JPEG, PNG, WebP or GIF files.
+
+AI images and uploads are saved as WebP in four widths to **Cloudflare R2** and served from `https://media.thebesads.com`.
+
+Auto-published stories get images on their own. The AI picks a main image and one in-story photo from the stock results, and generates an illustration only when nothing fits. If this step fails, the story still publishes, just without images.
+
+Images reach the website when a story is published. On a live story, an editor or publisher clicks **Update the live story's images** to send changes.
+
+**One-time setup:**
+1. **R2 bucket:** in Cloudflare, go to **R2 → Create bucket** and name it `storyhub-media`.
+2. **Custom domain:** in the bucket's **Settings → Custom Domains**, connect `media.thebesads.com`. Cloudflare adds the DNS record itself. Leave the bucket's public `r2.dev` address off.
+3. **R2 token:** go to **R2 → Manage R2 API Tokens → Create API token**. Choose **Object Read & Write**, limited to `storyhub-media`. Note the Access Key ID, the Secret Access Key and your Account ID.
+4. **Unsplash key:** create an app at unsplash.com/developers and copy its **Access Key**. A new app gets 50 requests an hour. Apply for production (5,000 an hour) once the desk shows credits, which it already does.
+5. **Pexels key:** get an API key at pexels.com/api. The limit is 200 requests an hour.
+6. **Server settings:** add the keys to `/opt/story-hub/.env` on the server by typing them there (`sudo nano /opt/story-hub/.env`), never in chat or email:
+
+   ```
+   R2_ACCOUNT_ID=...
+   R2_ACCESS_KEY_ID=...
+   R2_SECRET_ACCESS_KEY=...
+   R2_BUCKET=storyhub-media
+   MEDIA_BASE_URL=https://media.thebesads.com
+   UNSPLASH_ACCESS_KEY=...
+   PEXELS_API_KEY=...
+   # optional: IMAGE_MODEL=gemini-nano-banana-2.1
+   ```
+
+   Then run `systemctl restart story-hub-desk`.
+7. **Check it:** the Images panel on any story says which parts are set up. If a key is missing, it names it.
+
+Settings such as sizes, styles, the number of in-story images and the illustration fallback live under `images:` in `config/editorial.yaml`. Logs of background generation jobs are in `/var/lib/story-hub/logs/images-*.log`.
+
 ## Updating
 
 Push to `main`. The **Tests and deploy** workflow runs the tests on GitHub, then connects to the server, which runs `story-hub-update`. That script:

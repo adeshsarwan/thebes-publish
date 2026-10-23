@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("schedule"); p.add_argument("op", choices=["install", "uninstall", "status"])
     sub.add_parser("sources")
     p = sub.add_parser("pickup-run"); p.add_argument("request_id", type=int); p.add_argument("--mock", action="store_true")
+    p = sub.add_parser("image-run", help="generate queued AI images (started by the desk)")
+    p.add_argument("image_ids", type=int, nargs="+"); p.add_argument("--mock", action="store_true")
     p = sub.add_parser("pickup", help="editor override: research and draft a desk story now")
     p.add_argument("cluster_id", type=int); p.add_argument("--as", dest="actor", required=True)
     p.add_argument("--angle", required=True); p.add_argument("--audience", default=""); p.add_argument("--notes", default="")
@@ -63,6 +65,17 @@ def main(argv: list[str] | None = None) -> int:
         from .pickup import run_request
         story_id = run_request(args.request_id, get_client(args.mock))
         print(f"pick request {args.request_id} done: story {story_id}")
+        return 0
+
+    if args.cmd == "image-run":
+        from pipeline.db import connect
+        from pipeline.llm import get_client
+        from .media import run_generation
+        db = connect("newsroom")
+        try:
+            print(f"images {args.image_ids}: {run_generation(db, args.image_ids, get_client(args.mock))}")
+        finally:
+            db.close()
         return 0
 
     if args.cmd == "pull":

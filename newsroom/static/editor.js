@@ -4,7 +4,7 @@
  * truth while editing; on save it is serialised to Editor.js-compatible JSON
  * blocks and posted with the form. The server sanitises everything again.
  *
- * Blocks: paragraph, header (H2/H3), list (bulleted/numbered), quote, table, delimiter.
+ * Blocks: paragraph, header (H2/H3), list (bulleted/numbered), quote, table, delimiter, image.
  * Insert with "/" in an empty paragraph, the + buttons, or markdown shortcuts
  * ("## ", "### ", "- ", "1. ", "> ", "---"). Select text for bold, italic and links.
  */
@@ -28,7 +28,8 @@
     { type: "list", style: "ordered", label: "Numbered list", hint: "Steps in order", icon: "1.", keys: "numbered ordered ol steps list" },
     { type: "quote", label: "Quote", hint: "A quotation with its source", icon: "“", keys: "quote blockquote citation" },
     { type: "table", label: "Table", hint: "Rows and columns of figures", icon: "▦", keys: "table grid figures numbers" },
-    { type: "delimiter", label: "Divider", hint: "A line between parts", icon: "—", keys: "divider separator hr line delimiter" }
+    { type: "delimiter", label: "Divider", hint: "A line between parts", icon: "—", keys: "divider separator hr line delimiter" },
+    { type: "image", label: "Image", hint: "A photo or illustration from the story's images", icon: "▣", keys: "image photo picture illustration figure" }
   ];
 
   // ------------------------------------------------------------------ helpers
@@ -47,7 +48,7 @@
   function tidy(n) { if (n && textOf(n).trim() === "" && !n.querySelector("li,td")) n.innerHTML = ""; }
   function blocks() { return Array.prototype.slice.call(root.children); }
   function blockOf(n) { while (n && n !== root) { if (n.classList && n.classList.contains("blk")) return n; n = n.parentNode; } return null; }
-  function bodyOf(b) { return b.querySelector(".blk-body") || b.querySelector("td") || b.querySelector(".blk-hr"); }
+  function bodyOf(b) { return b.querySelector(".blk-body") || b.querySelector("td") || b.querySelector(".blk-hr") || b.querySelector(".blk-img"); }
   function markDirty() { dirty = true; scheduleBackup(); scheduleCount(); }
 
   function placeCaret(n, atEnd) {
@@ -104,6 +105,17 @@
       q.appendChild(body); q.appendChild(cap); w.appendChild(q);
     } else if (t === "delimiter") {
       body = el("div", "blk-hr", { tabindex: "0", role: "separator", "aria-label": "Divider" });
+    } else if (t === "image") {
+      var fig = el("figure", "blk-img", { tabindex: "0", contenteditable: "false", "aria-label": "Image" });
+      w._img = {}; for (var k in d) if (k !== "caption" && k !== "alt") w._img[k] = d[k];
+      var im = el("img", "", { src: d.url || "", alt: d.alt || "" });
+      var alt = el("input", "blk-alt", { type: "text", placeholder: "Alt text: what the image shows (for screen readers and search)", "aria-label": "Alt text" });
+      alt.value = d.alt || "";
+      var icap = editable(el("div", "blk-cap"), "Caption (optional)");
+      icap.innerHTML = d.caption || "";
+      var cr = el("div", "blk-credit"); cr.textContent = d.credit || "";
+      fig.appendChild(im); fig.appendChild(icap); fig.appendChild(cr); fig.appendChild(alt);
+      w.appendChild(fig);
     } else if (t === "table") {
       var rows = (d.content && d.content.length) ? d.content : [["", "", ""], ["", "", ""], ["", "", ""]];
       var wrap = el("div", "blk-table"), tbl = el("table", d.withHeadings === false ? "" : "head");
@@ -138,7 +150,8 @@
       btn("− Col", "Remove the current column", function () { tableCol(w, -1); });
       btn("Header", "Toggle header row", function () { w.querySelector("table").classList.toggle("head"); });
     }
-    if (t !== "delimiter" && t !== "table") btn("⇄", "Turn into another block", function (b) { openMenu(b, { mode: "convert", block: w }); });
+    if (t === "image") btn("Swap", "Choose a different image", function () { document.dispatchEvent(new CustomEvent("fh-pick-image", { detail: { replace: w } })); });
+    if (t !== "delimiter" && t !== "table" && t !== "image") btn("⇄", "Turn into another block", function (b) { openMenu(b, { mode: "convert", block: w }); });
     btn("↑", "Move up", function () { if (w.previousElementSibling) { root.insertBefore(w, w.previousElementSibling); focusBlock(w, true); } });
     btn("↓", "Move down", function () { if (w.nextElementSibling) { root.insertBefore(w.nextElementSibling, w); focusBlock(w, true); } });
     btn("✕", "Delete block", function () { removeBlock(w); });
@@ -221,7 +234,7 @@
     var pop = menu.el, opts = menu.opts;
     q = (q || "").toLowerCase().trim();
     var list = TYPES.filter(function (t) {
-      if (opts.mode === "convert" && (t.type === "table" || t.type === "delimiter")) return false;
+      if (opts.mode === "convert" && (t.type === "table" || t.type === "delimiter" || t.type === "image")) return false;
       return !q || t.label.toLowerCase().indexOf(q) >= 0 || t.keys.indexOf(q) >= 0;
     });
     menu.items = list; menu.active = Math.min(menu.active, Math.max(0, list.length - 1));
@@ -238,6 +251,12 @@
   }
   function pick(t) {
     var opts = menu.opts; closeMenu();
+    if (t.type === "image") {
+      var anchor = opts.mode === "slash" ? opts.block : (opts.after || null);
+      if (opts.mode === "slash") { var sb = bodyOf(anchor); sb.innerHTML = ""; }
+      document.dispatchEvent(new CustomEvent("fh-pick-image", { detail: { after: anchor, clear: opts.mode === "slash" ? anchor : null } }));
+      return;
+    }
     var spec = { type: t.type, data: { level: t.level, style: t.style } };
     if (opts.mode === "convert") { convert(opts.block, t); return; }
     if (opts.mode === "slash") {
@@ -365,9 +384,17 @@
   }
 
   root.addEventListener("keydown", function (ev) {
+    if (ev.target.nodeName === "INPUT") { if (ev.key === "Enter") ev.preventDefault(); return; }
     if (menuKey(ev)) return;
     var w = blockOf(ev.target); if (!w) return;
     var t = w.dataset.type, target = ev.target;
+    if (t === "image") {
+      if (target.classList.contains("blk-cap")) {
+        if (ev.key === "Enter") { ev.preventDefault(); insertAfter(w, { type: "paragraph", data: {} }); }
+        return;
+      }
+      t = "delimiter";   // the picture itself behaves like a divider: Backspace removes it, Enter adds a paragraph
+    }
     var mod = ev.metaKey || ev.ctrlKey;
     if (mod && (ev.key === "k" || ev.key === "K")) { ev.preventDefault(); linkInput(); return; }
 
@@ -503,6 +530,11 @@
         out.push({ type: t, data: { style: w.dataset.style, items: items } });
       } else if (t === "quote") out.push({ type: t, data: { text: body.innerHTML, caption: w.querySelector(".blk-cap").innerHTML } });
       else if (t === "delimiter") out.push({ type: t, data: {} });
+      else if (t === "image") {
+        var d = {}; for (var k in (w._img || {})) d[k] = w._img[k];
+        d.caption = w.querySelector(".blk-cap").innerHTML; d.alt = w.querySelector(".blk-alt").value;
+        out.push({ type: t, data: d });
+      }
       else if (t === "table") {
         var tbl = w.querySelector("table");
         out.push({ type: t, data: { withHeadings: tbl.classList.contains("head"),
@@ -597,5 +629,25 @@
       bar.querySelector("[data-act=discard]").addEventListener("click", function () { clearBackup(); bar.hidden = true; });
     }
   } catch (e) { /* storage unavailable */ }
-  window.FH_EDITOR = { serialise: serialise, state: state };
+  var lastBlock = null;
+  root.addEventListener("focusin", function (ev) { lastBlock = blockOf(ev.target) || lastBlock; });
+  // Called by the images panel: put an image block after `after` (or the block last worked on), or in place of `replace`.
+  function insertImage(data, opts) {
+    opts = opts || {};
+    if (opts.replace && opts.replace.parentNode === root) {
+      var old = opts.replace, keep = old.querySelector(".blk-cap").innerHTML, keepAlt = old.querySelector(".blk-alt").value;
+      if (!data.caption && keep) data.caption = keep;
+      if (!data.alt && keepAlt) data.alt = keepAlt;
+      return replaceBlock(old, { type: "image", data: data });
+    }
+    var ref = opts.after || (lastBlock && lastBlock.parentNode === root ? lastBlock : root.lastElementChild);
+    var n = insertAfter(ref, { type: "image", data: data }, false);
+    if (opts.clear && opts.clear.parentNode === root && !textOf(bodyOf(opts.clear)).trim()) opts.clear.remove();
+    if (!n.nextElementSibling) insertAfter(n, { type: "paragraph", data: {} }, false);
+    n.scrollIntoView({ block: "center", behavior: "smooth" });
+    var a = n.querySelector(".blk-alt"); if (a && !a.value) a.focus();
+    return n;
+  }
+  root.addEventListener("input", function (ev) { if (ev.target.classList && ev.target.classList.contains("blk-alt")) markDirty(); });
+  window.FH_EDITOR = { serialise: serialise, state: state, insertImage: insertImage };
 })();
