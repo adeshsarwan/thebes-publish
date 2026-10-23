@@ -1,4 +1,4 @@
-/* Finance Hub block editor (WordPress-style): top toolbar, writing canvas, settings sidebar. */
+/* Story Hub block editor (WordPress-style): top toolbar, writing canvas, settings sidebar. */
 main.wide{max-width:none;padding:0}
 .ed-top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);
   display:flex;align-items:center;gap:12px;padding:10px 20px;flex-wrap:wrap}

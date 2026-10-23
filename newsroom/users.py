@@ -18,7 +18,7 @@ PLACEHOLDERS = [
         "slug": "maya-fernandes",
         "role": "editor",
         "job_title": "Senior Personal Finance Editor",
-        "bio": "Maya edits Finance Hub's money desk, covering interest rates, household budgets, "
+        "bio": "Maya edits Story Hub's money desk, covering interest rates, household budgets, "
                "borrowing and savings for readers in the US, UK, Canada and Australia.",
     },
     {
@@ -35,7 +35,7 @@ PLACEHOLDERS = [
         "slug": "sara-lindqvist",
         "role": "publisher",
         "job_title": "Managing Editor, Digital",
-        "bio": "Sara oversees what goes live on Finance Hub and when.",
+        "bio": "Sara oversees what goes live on Story Hub and when.",
     },
     {
         "email": "admin@financehub.local",

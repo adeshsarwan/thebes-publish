@@ -1,4 +1,4 @@
-/* Finance Hub block editor.
+/* Story Hub block editor.
  *
  * A small Gutenberg-style editor with no dependencies. The DOM is the source of
  * truth while editing; on save it is serialised to Editor.js-compatible JSON

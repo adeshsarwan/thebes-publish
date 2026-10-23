@@ -3,7 +3,7 @@
 
 # The publication's name, shown in the desk header and on auto-published stories.
 publication:
-  name: Finance Hub
+  name: Story Hub
 
 desk:
   lookback_hours: 72          # only evaluate items published in this window

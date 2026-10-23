@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Finance Hub: one-shot local setup + health check for macOS. Safe to re-run.
+# Story Hub: one-shot local setup + health check for macOS. Safe to re-run.
 #   cd ~/Projects/finance-ingest && bash setup_mac.sh
 #
 # 1. Python virtualenv + dependencies

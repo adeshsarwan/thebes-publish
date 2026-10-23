@@ -1254,7 +1254,7 @@ def _lines(text: str) -> list[str]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FinanceHubNewsroom/0.3"
+    server_version = "StoryHubNewsroom/0.3"
 
     # -- helpers
     def _token(self) -> str | None:
@@ -1608,7 +1608,7 @@ def serve(port: int = 8765) -> None:
             print("No admin can sign in yet. Create one first:  python -m newsroom create-admin")
     finally:
         db.close()
-    print(f"\nFinance Hub newsroom running at  http://{'localhost' if bind in ('127.0.0.1', '::1') else bind}:{httpd.server_address[1]}   (Ctrl+C to stop)\n", flush=True)
+    print(f"\nStory Hub newsroom running at  http://{'localhost' if bind in ('127.0.0.1', '::1') else bind}:{httpd.server_address[1]}   (Ctrl+C to stop)\n", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -255,7 +255,7 @@ def set_category(db: Database, story_id: int, user: dict, category: str, note: s
 
 # --------------------------------------------------------------------------- publishing
 def publication_name() -> str:
-    return ((get_settings().editorial.get("publication") or {}).get("name") or "Finance Hub").strip()
+    return ((get_settings().editorial.get("publication") or {}).get("name") or "Story Hub").strip()
 
 
 def disclosure_for(author: dict, ai_assisted: bool, human_reviewed: bool = True, category: str | None = None) -> str:

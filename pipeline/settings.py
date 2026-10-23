@@ -65,7 +65,7 @@ def get_settings() -> Settings:
         writer_model=os.getenv("GEMINI_WRITER_MODEL", "gemini-flash-latest"),
         user_agent=os.getenv(
             "INGEST_USER_AGENT",
-            "FinanceHubBot/0.1 (+https://yourdomain.com/bot; news aggregation)",
+            "StoryHubBot/0.1 (+https://yourdomain.com/bot; news aggregation)",
         ),
         http_timeout=float(os.getenv("HTTP_TIMEOUT", "20")),
         feeds=_load("feeds.yaml"),

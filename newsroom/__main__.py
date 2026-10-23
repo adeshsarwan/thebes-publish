@@ -32,7 +32,7 @@ from .users import find_user, list_users, seed_placeholders
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="newsroom", description="Finance Hub newsroom")
+    ap = argparse.ArgumentParser(prog="newsroom", description="Story Hub newsroom")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("seed-users")
     p = sub.add_parser("serve"); p.add_argument("--port", type=int, default=8765)

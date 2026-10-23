@@ -1,4 +1,4 @@
-# Finance Hub — Pipeline, Newsroom & Site Contract
+# Story Hub — Pipeline, Newsroom & Site Contract
 
 Three systems, one PostgreSQL database, three schemas:
 
@@ -46,7 +46,7 @@ After each pull, AI drafts are published automatically when they meet all of the
 - the draft passed every guardrail;
 - no one has touched it yet.
 
-These stories carry an **Auto-published** badge. On the site they show "Finance Hub newsroom · Responsible editor: …" (`autopublish.responsible_editor`), with a disclosure that no editor reviewed them. To roll one back, an editor clicks **Unpublish**, then **Assign to copy editor**. After it's edited, approved and published again, it shows the approving editor's byline and the "reviewed and edited by" disclosure. Switch auto-publish off with `autopublish.enabled: false` in `config/editorial.yaml`.
+These stories carry an **Auto-published** badge. On the site they show "Story Hub newsroom · Responsible editor: …" (`autopublish.responsible_editor`), with a disclosure that no editor reviewed them. To roll one back, an editor clicks **Unpublish**, then **Assign to copy editor**. After it's edited, approved and published again, it shows the approving editor's byline and the "reviewed and edited by" disclosure. Switch auto-publish off with `autopublish.enabled: false` in `config/editorial.yaml`.
 
 ### Sources & pulls page
 - **Editors add RSS feeds** with "Test feed" or "Test and add". The feed is fetched and parsed before it's saved. Addresses on private or local networks are refused.
