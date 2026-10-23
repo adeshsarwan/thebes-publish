@@ -439,3 +439,26 @@ class ImageHttpTest(ImagesBase):
         self._post(f"/images/{stock['id']}/update", {"role": "hero"})
         page = self.op.open(self.base + f"/story/{self.sid}").read().decode()
         self.assertIn('figure class="story-image hero"', page)
+
+
+class AutosaveHttpTest(ImageHttpTest):
+    def test_panel_endpoints(self):   # covered by ImageHttpTest
+        pass
+
+    def test_autosave_round_trip(self):
+        state = {"headline": "Draft headline", "dek": "", "blocks": [{"type": "paragraph", "data": {"text": "Work in progress"}}], "side": {}}
+        code, body = self._post(f"/story/{self.sid}/autosave", {"state": json.dumps(state), "base_version": "1"})
+        self.assertEqual(code, 200, body)
+        code, _ = self._post(f"/story/{self.sid}/autosave", {"state": "not json"})
+        self.assertEqual(code, 400)
+        edit = self.op.open(self.base + f"/story/{self.sid}/edit").read().decode()
+        self.assertIn('"autosave": {"base_version": 1', edit)
+        self.assertIn("Work in progress", edit)
+        # a real save clears it
+        form = {"headline": "Saved headline", "dek": "", "blocks": json.dumps(state["blocks"] * 3), "then": "save"}
+        self._post(f"/story/{self.sid}/edit", form)
+        edit = self.op.open(self.base + f"/story/{self.sid}/edit").read().decode()
+        self.assertNotIn('"autosave":', edit)
+        # cross-site autosave posts are refused
+        code, _ = self._post(f"/story/{self.sid}/autosave", {"state": json.dumps(state)}, headers={"Origin": "https://evil.example"})
+        self.assertEqual(code, 403)

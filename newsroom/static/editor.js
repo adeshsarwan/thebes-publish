@@ -17,7 +17,7 @@
   var dekEl = document.getElementById("ed-dek");
   var wcEl = document.getElementById("ed-wc");
   var msgEl = document.getElementById("ed-msg");
-  var dirty = false;
+  var dirty = false, submitting = false;
   var DRAFT_KEY = "fh-draft-" + cfg.story_id + "-v" + cfg.version;
 
   var TYPES = [
@@ -49,7 +49,7 @@
   function blocks() { return Array.prototype.slice.call(root.children); }
   function blockOf(n) { while (n && n !== root) { if (n.classList && n.classList.contains("blk")) return n; n = n.parentNode; } return null; }
   function bodyOf(b) { return b.querySelector(".blk-body") || b.querySelector("td") || b.querySelector(".blk-hr") || b.querySelector(".blk-img"); }
-  function markDirty() { dirty = true; scheduleBackup(); scheduleCount(); }
+  function markDirty() { dirty = true; scheduleBackup(); scheduleCount(); document.dispatchEvent(new Event("fh-editor-changed")); }
 
   function placeCaret(n, atEnd) {
     if (!n) return;
@@ -603,7 +603,7 @@
     form.querySelector("[name=headline]").value = s.headline;
     form.querySelector("[name=dek]").value = s.dek;
     form.querySelector("[name=blocks]").value = JSON.stringify(s.blocks);
-    dirty = false; clearBackup();
+    dirty = false; submitting = true; clearBackup();
     Array.prototype.forEach.call(document.querySelectorAll("button[form=editform]"), function (b) { setTimeout(function () { b.disabled = true; }, 0); });
   });
   window.addEventListener("beforeunload", function (ev) { if (dirty) { ev.preventDefault(); ev.returnValue = ""; } });
@@ -631,16 +631,51 @@
 
   // start
   load({ headline: cfg.headline, dek: cfg.dek, blocks: cfg.blocks });
-  try {
-    var saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
-    if (saved && saved.state && JSON.stringify(saved.state.blocks) !== JSON.stringify(serialise())) {
-      var bar = document.getElementById("ed-restore");
-      bar.querySelector("span").textContent = "You have unsaved changes from " + new Date(saved.at).toLocaleString() + ".";
-      bar.hidden = false;
-      bar.querySelector("[data-act=restore]").addEventListener("click", function () { load(saved.state); dirty = true; bar.hidden = true; });
-      bar.querySelector("[data-act=discard]").addEventListener("click", function () { clearBackup(); bar.hidden = true; });
-    }
-  } catch (e) { /* storage unavailable */ }
+  // Restore: the newest of the server autosave (any device) and this browser's backup
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); } catch (e) { saved = null; }
+  if (cfg.autosave && cfg.autosave.state) {
+    var at = Date.parse(cfg.autosave.at.replace(" ", "T"));
+    if (!saved || !(saved.at > at)) saved = { at: isNaN(at) ? Date.now() : at, state: cfg.autosave.state, outdated: cfg.autosave.outdated, server: true };
+  }
+  function sig(st) { return JSON.stringify([st.headline || "", st.dek || "", st.blocks || []]); }
+  if (saved && saved.state && sig(saved.state) !== sig(state())) {
+    var bar = document.getElementById("ed-restore");
+    bar.querySelector("span").textContent = "You have unsaved changes from " + new Date(saved.at).toLocaleString() + "." +
+      (saved.outdated ? " They were made on an older version, and someone has saved since: check before restoring." : "");
+    bar.hidden = false;
+    bar.querySelector("[data-act=restore]").addEventListener("click", function () { load(saved.state); markDirty(); bar.hidden = true; });
+    bar.querySelector("[data-act=discard]").addEventListener("click", function () {
+      clearBackup(); bar.hidden = true;
+      post("/story/" + cfg.story_id + "/autosave", { discard: "1" });
+    });
+  }
+
+  // Autosave to the server every minute while there are changes. It is not a version: no checks,
+  // no status change. "Save draft" (or ⌘S) makes the version; the autosave is then cleared.
+  var autoEl = document.createElement("span"); autoEl.className = "ed-auto"; autoEl.setAttribute("role", "status");
+  wcEl.parentNode.insertBefore(autoEl, wcEl);
+  var autoDirty = false, autoBusy = false;
+  function post(url, data, keepalive) {
+    return fetch(url, { method: "POST", credentials: "same-origin", keepalive: !!keepalive,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(data) });
+  }
+  function autosave(keepalive) {
+    if (!autoDirty || autoBusy || submitting) return;
+    autoBusy = true; autoDirty = false;
+    post("/story/" + cfg.story_id + "/autosave", { state: JSON.stringify(state()), base_version: cfg.version }, keepalive)
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function () { autoEl.textContent = "Autosaved " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); autoEl.classList.remove("bad"); })
+      .catch(function () { autoDirty = true; autoEl.textContent = "Autosave failed; your changes are kept in this browser"; autoEl.classList.add("bad"); })
+      .then(function () { autoBusy = false; });
+  }
+  root.addEventListener("input", function () { autoDirty = true; });
+  [titleEl, dekEl].forEach(function (n) { n.addEventListener("input", function () { autoDirty = true; }); });
+  Array.prototype.forEach.call(document.querySelectorAll("[form=editform]"), function (n) { n.addEventListener("input", function () { autoDirty = true; }); });
+  document.addEventListener("fh-editor-changed", function () { autoDirty = true; });
+  setInterval(function () { autosave(false); }, 60000);
+  document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") autosave(true); });
+
   var lastBlock = null;
   root.addEventListener("focusin", function (ev) { lastBlock = blockOf(ev.target) || lastBlock; });
   // Called by the images panel: put an image block after `after` (or the block last worked on), or in place of `replace`.

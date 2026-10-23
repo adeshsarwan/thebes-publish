@@ -340,6 +340,17 @@ create index if not exists story_images_story on newsroom.story_images (story_id
 
 -- Keys for the read-only Stories API (storyapi). Only a SHA-256 hash of each key is kept;
 -- the key itself is shown once, when an admin creates it on the desk's API page.
+-- Editor autosave: the work in progress of one person on one story, kept every minute while they
+-- edit. Not a version: no status change, no checks. Cleared when they save a real version.
+create table if not exists newsroom.story_autosaves (
+    story_id      bigint not null references newsroom.stories(id),
+    user_id       bigint not null references newsroom.users(id),
+    base_version  integer not null,            -- the version they started from
+    state         jsonb not null,              -- {headline, dek, blocks, side}
+    updated_at    timestamptz not null default now(),
+    primary key (story_id, user_id)
+);
+
 create table if not exists site.api_clients (
     id          bigserial primary key,
     name        text not null,                 -- who it's for, e.g. "Acme frontend (staging)"

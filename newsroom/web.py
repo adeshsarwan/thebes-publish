@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from pipeline import categories, seo
 from pipeline.cluster import cluster_items
-from pipeline.db import Database, connect
+from pipeline.db import Database, connect, utcnow
 from pipeline.settings import COUNTRY_NAMES, get_settings
 
 from . import auth
@@ -654,6 +654,11 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     cfgs = categories.guardrails(story.get("category"))
     data = {"story_id": story_id, "version": story["current_version"], "headline": rev["headline"], "dek": rev.get("dek") or "",
             "blocks": editor_blocks(rev, story.get("category")), "min_words": cfgs["min_words"], "max_words": cfgs["max_words"]}
+    auto = db.fetchone("select base_version, state, updated_at from newsroom.story_autosaves where story_id = ? and user_id = ?",
+                       (story_id, actor["id"]))
+    if auto:
+        data["autosave"] = {"base_version": auto["base_version"], "state": Database.unj(auto["state"], {}),
+                            "at": str(auto["updated_at"]), "outdated": auto["base_version"] != story["current_version"]}
     data_json = json.dumps(data).replace("<", "\\u003c")
     body = f"""<link rel="stylesheet" href="/static/editor.css">
 {toolbar}
@@ -1427,7 +1432,7 @@ def sources_page(db: Database, user: dict, test_result: dict | None = None, form
 
 # --------------------------------------------------------------------------- server
 def _form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
-    length = min(int(handler.headers.get("Content-Length") or 0), 200_000)
+    length = min(int(handler.headers.get("Content-Length") or 0), 1_000_000)
     data = parse_qs(handler.rfile.read(length).decode("utf-8"), keep_blank_values=True)
     return {k: v[0] for k, v in data.items()}
 
@@ -1745,6 +1750,8 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 try:
                     report = wf.save_revision(db, sid, user, content, note=form.get("note") or None)
+                    db.execute("delete from newsroom.story_autosaves where story_id = ? and user_id = ?", (sid, user["id"]))
+                    db.commit()
                 except wf.WorkflowError as exc:
                     db.rollback()
                     return self._redirect(f"/story/{sid}?err={quote(str(exc))}")
@@ -1776,6 +1783,30 @@ class Handler(BaseHTTPRequestHandler):
                     msg += " Readers still see the published version until this is approved and republished."
                 return self._redirect(f"/story/{sid}?{'err' if errs else 'ok'}={quote(msg)}")
 
+            if m := re.fullmatch(r"/story/(\d+)/autosave", path):
+                sid = int(m.group(1))
+                story = get_story(db, sid)
+                if not story or not wf.can_edit(story, user):
+                    return self._json(403, {"error": "You can't edit this story now."})
+                if form.get("discard") == "1":
+                    db.execute("delete from newsroom.story_autosaves where story_id = ? and user_id = ?", (sid, user["id"]))
+                    db.commit()
+                    return self._json(200, {"ok": True})
+                try:
+                    state = json.loads(form.get("state") or "")
+                    if not isinstance(state, dict) or not isinstance(state.get("blocks"), list):
+                        raise ValueError
+                except ValueError:
+                    return self._json(400, {"error": "bad autosave"})
+                base = int(form["base_version"]) if form.get("base_version", "").isdigit() else story["current_version"]
+                now = utcnow()
+                db.execute(
+                    """insert into newsroom.story_autosaves (story_id, user_id, base_version, state, updated_at) values (?,?,?,?,?)
+                       on conflict (story_id, user_id) do update set base_version = excluded.base_version,
+                         state = excluded.state, updated_at = excluded.updated_at""",
+                    (sid, user["id"], base, db.j(state), now))
+                db.commit()
+                return self._json(200, {"ok": True, "at": now})
             if upload or re.fullmatch(r"/(story/\d+/images/\w+|images/\d+/\w+)", path):
                 return self._image_post(db, user, path, form, upload)
 
