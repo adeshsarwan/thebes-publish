@@ -49,9 +49,19 @@ PEXELS = {"photos": [{
     "src": {"original": "https://images.pexels.com/photos/98765/x.jpeg", "medium": "https://images.pexels.com/photos/98765/x.jpeg?h=350"}}]}
 
 
+PIXABAY = {"total": 1, "hits": [{
+    "id": 4455, "pageURL": "https://pixabay.com/photos/signing-contract-4455/", "tags": "contract, signing, business",
+    "webformatURL": "https://pixabay.com/get/abc_640.jpg", "largeImageURL": "https://pixabay.com/get/abc_1280.jpg",
+    "imageWidth": 5000, "imageHeight": 3000, "user": "Pat", "user_id": 77}]}
+
+
 def fake_get(calls):
     def get(url, params=None, headers=None, timeout=None):
         calls.append((url, params, headers))
+        if url == "https://pixabay.com/api/":
+            return FakeResp(PIXABAY)
+        if url.startswith("https://pixabay.com/get/"):
+            r = FakeResp({}); r.content = png(1280, 768); return r
         if "api.unsplash.com/search" in url:
             return FakeResp(UNSPLASH)
         if "api.pexels.com/v1/search" in url:
@@ -135,6 +145,31 @@ class ImageUnitTest(ImagesBase):
         self.assertEqual(media.clean_credit(snippet), ("Photo by Lewis Keegan on Unsplash",
                                                        "https://unsplash.com/@skillscouter?utm_source=unsplash&utm_medium=referral"))
         self.assertEqual(media.clean_credit("Photo: Jane / Agency"), ("Photo: Jane / Agency", None))
+
+    def test_pixabay_search_copy_and_credit(self):
+        from newsroom import blocks as blk, media
+        calls = []
+        with mock.patch.dict(os.environ, {"PIXABAY_API_KEY": "test-pixabay"}), \
+                mock.patch("newsroom.media.requests.get", side_effect=fake_get(calls)):
+            out = media.search_stock("contract signing", "all", per_page=6)
+            provs = [r["provider"] for r in out["results"]]
+            self.assertEqual(provs, ["unsplash", "pixabay", "pexels"])
+            px = out["results"][1]
+            self.assertEqual((px["credit"], px["alt"]), ("Image by Pat from Pixabay", "Contract, signing, business"))
+            self.assertEqual(px["photographer_url"], "https://pixabay.com/users/Pat-77/")
+            px_call = next(c for c in calls if c[0] == "https://pixabay.com/api/")
+            self.assertEqual((px_call[1]["safesearch"], px_call[1]["image_type"], px_call[1]["orientation"]), ("true", "photo", "horizontal"))
+            n = len(calls)
+            media.search_stock("contract signing", "all", per_page=6)              # Pixabay part cached for 24 hours
+            self.assertFalse(any(c[0] == "https://pixabay.com/api/" for c in calls[n:]))
+            db = self.prepared("img_pixabay")
+            sid = self.story(db)
+            iid = media.add_stock(db, self.user(db, "maya"), sid, "pixabay", "4455", role="hero")
+        img = media.get_image(db, iid)
+        self.assertTrue(img["url"].startswith("/media/stories/"), img["url"])        # our copy, not a Pixabay hotlink
+        self.assertEqual((img["provider"], img["width"]), ("pixabay", 1280))
+        html = blk.figure_html(img)
+        self.assertIn('Image by <a target="_blank" rel="noopener" href="https://pixabay.com/users/Pat-77/">Pat</a> from', html)
 
     def test_country_setting_in_searches_and_prompts(self):
         from newsroom import media

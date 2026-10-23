@@ -8,7 +8,7 @@
   var body = panel.querySelector(".img-body");
   var sid = boot.story_id, editor = boot.mode === "editor";
   var state = boot.state, pollTimer = null, pending = null;   // pending: what to do with the next image added (editor picker)
-  var KIND = { unsplash: "Unsplash", pexels: "Pexels", gemini: "AI image", upload: "Upload" };
+  var KIND = { unsplash: "Unsplash", pexels: "Pexels", pixabay: "Pixabay", gemini: "AI image", upload: "Upload" };
   var ROLE = { hero: "Main image", inline: "In the story", gallery: "Not used yet" };
 
   function el(tag, cls, attrs, text) {
@@ -215,14 +215,15 @@
     return box;
   }
 
-  var HOME = { unsplash: ["Unsplash", "https://unsplash.com/?utm_source=story_hub&utm_medium=referral"], pexels: ["Pexels", "https://www.pexels.com"] };
+  var HOME = { unsplash: ["Unsplash", "https://unsplash.com/?utm_source=story_hub&utm_medium=referral"], pexels: ["Pexels", "https://www.pexels.com"], pixabay: ["Pixabay", "https://pixabay.com/"] };
   // "Photo by <photographer> on <Unsplash>", both linked, as the photo sites ask
   function creditLine(img) {
     var cr = el("div", "img-credit"), home = HOME[img.provider];
     if (home && img.photographer) {
-      cr.appendChild(document.createTextNode("Photo by "));
+      var px = img.provider === "pixabay";
+      cr.appendChild(document.createTextNode(px ? "Image by " : "Photo by "));
       cr.appendChild(img.photographer_url ? el("a", "", { href: img.photographer_url, target: "_blank", rel: "noopener" }, img.photographer) : document.createTextNode(img.photographer));
-      cr.appendChild(document.createTextNode(" on "));
+      cr.appendChild(document.createTextNode(px ? " from " : " on "));
       cr.appendChild(el("a", "", { href: home[1], target: "_blank", rel: "noopener" }, home[0]));
     } else if (img.credit_url) cr.appendChild(el("a", "", { href: img.credit_url, target: "_blank", rel: "noopener" }, img.credit));
     else cr.textContent = img.credit || "";
@@ -299,8 +300,8 @@
     var form = el("form", "img-search");
     var q = el("input", "", { type: "search", name: "q", placeholder: "Search Unsplash and Pexels, e.g. family budget kitchen", "aria-label": "Search" });
     q.value = stockTab.last || boot.query || "";
-    var provs = [["unsplash", "Unsplash"], ["pexels", "Pexels"]].filter(function (x) { return st[x[0]]; });
-    var prov = select("provider", (provs.length > 1 ? [["all", "Unsplash + Pexels"]] : []).concat(provs.length ? provs : [["all", "Stock"]]),
+    var provs = [["unsplash", "Unsplash"], ["pixabay", "Pixabay"], ["pexels", "Pexels"]].filter(function (x) { return st[x[0]]; });
+    var prov = select("provider", (provs.length > 1 ? [["all", provs.map(function (x) { return x[1]; }).join(" + ")]] : []).concat(provs.length ? provs : [["all", "Stock"]]),
       stockTab.prov || (provs.length > 1 ? "all" : (provs[0] || ["all"])[0]));
     var orient = select("orientation", [["landscape", "Landscape"], ["portrait", "Portrait"], ["square", "Square"], ["any", "Any shape"]], stockTab.orient || "landscape");
     form.appendChild(q); form.appendChild(prov); form.appendChild(orient);
@@ -314,8 +315,9 @@
     }
     form.appendChild(el("button", "primary", { type: "submit" }, "Search"));
     pane.appendChild(form);
-    if (!st.unsplash && !st.pexels) pane.appendChild(el("p", "img-note warn", null, "Stock search isn't set up on this server: add UNSPLASH_ACCESS_KEY to its settings."));
-    pane.appendChild(el("p", "meta", null, "Photos are shown from " + (provs.length === 1 ? provs[0][1] : "the photo site") + " with a credit to the photographer, as the licence asks. Free to use; no fee."));
+    if (!st.unsplash && !st.pexels && !st.pixabay) pane.appendChild(el("p", "img-note warn", null, "Stock search isn't set up on this server: add UNSPLASH_ACCESS_KEY to its settings."));
+    pane.appendChild(el("p", "meta", null, "Results from " + (provs.map(function (x) { return x[1]; }).join(" and ") || "the photo sites") +
+      ". Free to use, credited to the photographer as the licences ask." + (st.pixabay ? " Pixabay images are copied to our storage when you use one." : "")));
     var errs = el("div", "img-err"), grid = el("div", "img-grid"), more = el("div", "img-more");
     pane.appendChild(errs); pane.appendChild(grid); pane.appendChild(more);
     var page = 1;

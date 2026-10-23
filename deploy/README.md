@@ -158,6 +158,7 @@ Images reach the website when a story is published. On a live story, an editor o
    MEDIA_BASE_URL=https://media.thebesads.com
    UNSPLASH_ACCESS_KEY=...
    PEXELS_API_KEY=...
+   PIXABAY_API_KEY=...        # optional second stock source (pixabay.com/api/docs); its images are copied to R2
    # optional: IMAGE_MODEL=gemini-nano-banana-2.1
    ```
 

@@ -237,7 +237,7 @@ def clean_image(d: dict) -> dict | None:
     cu = _safe_href(str(d.get("credit_url") or ""))
     if cu:
         out["credit_url"] = cu
-    if d.get("provider") in ("unsplash", "pexels"):   # credit the photographer and the site, each linked
+    if d.get("provider") in ("unsplash", "pexels", "pixabay"):   # credit the photographer and the site, each linked
         out["provider"] = d["provider"]
         out["photographer"] = _plain(d.get("photographer"), 120)
         pu = _safe_href(str(d.get("photographer_url") or ""))
@@ -255,7 +255,8 @@ def clean_image(d: dict) -> dict | None:
 
 
 PROVIDER_HOME = {"unsplash": ("Unsplash", "https://unsplash.com/?utm_source=story_hub&utm_medium=referral"),
-                 "pexels": ("Pexels", "https://www.pexels.com")}
+                 "pexels": ("Pexels", "https://www.pexels.com"),
+                 "pixabay": ("Pixabay", "https://pixabay.com/")}
 
 
 def stock_credit_html(img: dict) -> str:
@@ -267,6 +268,8 @@ def stock_credit_html(img: dict) -> str:
     pu = _safe_href(img.get("photographer_url") or "")
     a = lambda href, text: (f'<a target="_blank" rel="noopener" href="{html.escape(href, quote=True)}">{html.escape(text)}</a>'  # noqa: E731
                             if href else html.escape(text))
+    if img.get("provider") == "pixabay":   # Pixabay's own wording
+        return f"Image by {a(pu, name)} from {a(prov[1], prov[0])}"
     return f"Photo by {a(pu, name)} on {a(prov[1], prov[0])}"
 
 

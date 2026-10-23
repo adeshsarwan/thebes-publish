@@ -195,7 +195,7 @@ def status() -> dict:
     """What works on this server, for the desk to show."""
     st = storage()
     return {"storage": st.name if st else None, "unsplash": bool(os.getenv("UNSPLASH_ACCESS_KEY")),
-            "pexels": bool(os.getenv("PEXELS_API_KEY")),
+            "pexels": bool(os.getenv("PEXELS_API_KEY")), "pixabay": bool(os.getenv("PIXABAY_API_KEY")),
             "generate": bool(st) and (get_settings().llm_provider == "mock" or bool(get_settings().gemini_api_key)),
             "model": cfg()["model"]}
 
@@ -232,6 +232,16 @@ def check_setup() -> list[tuple[str, bool, str]]:
             out.append(("Unsplash", False, f"couldn't reach Unsplash: {exc}"))
     else:
         out.append(("Unsplash", False, "UNSPLASH_ACCESS_KEY is not in .env"))
+    if (os.getenv("PIXABAY_API_KEY") or "").strip():
+        try:
+            r = requests.get("https://pixabay.com/api/", timeout=TIMEOUT,
+                             params={"key": os.environ["PIXABAY_API_KEY"].strip(), "q": "kitchen", "per_page": 3})
+            out.append(("Pixabay", r.ok, f"HTTP {r.status_code}, {r.headers.get('X-RateLimit-Remaining', '?')} searches left this minute"
+                        if r.ok else f"HTTP {r.status_code}: the key was refused"))
+        except requests.RequestException as exc:
+            out.append(("Pixabay", False, f"couldn't reach Pixabay: {exc}"))
+    else:
+        out.append(("Pixabay", False, "PIXABAY_API_KEY is not in .env (optional)"))
     s = get_settings()
     out.append(("Gemini (AI images)", bool(s.gemini_api_key) or s.llm_provider == "mock",
                 f"model {cfg()['model']}" if s.gemini_api_key else "GEMINI_API_KEY is not in .env"))
@@ -325,6 +335,51 @@ def _pexels(p: dict) -> dict:
             "credit_url": p.get("url") or "https://www.pexels.com", "download_location": None}
 
 
+PIXABAY_HOSTS = ("pixabay.com", "cdn.pixabay.com")
+
+
+def _pixabay(h: dict) -> dict:
+    """Pixabay forbids permanent hotlinking: these addresses are for the search results only.
+    When a photo is used, add_stock copies it into our own storage (R2)."""
+    name = h.get("user") or "Unknown"
+    page_url = h.get("pageURL") or ""
+    tags = (h.get("tags") or "").strip()
+    return {"provider": "pixabay", "provider_id": str(h["id"]), "url": h.get("largeImageURL") or h.get("webformatURL"),
+            "thumb": h.get("webformatURL") or h.get("previewURL"), "sizes": {},
+            "width": h.get("imageWidth"), "height": h.get("imageHeight"),
+            "alt": (tags[:1].upper() + tags[1:]) if tags else "",
+            "photographer": name, "photographer_url": f"https://pixabay.com/users/{name}-{h.get('user_id')}/" if h.get("user_id") else "",
+            "source_url": page_url, "credit": f"Image by {name} from Pixabay", "credit_url": page_url,
+            "download_location": None, "copy": True}
+
+
+_px_cache: dict[tuple, tuple[float, list]] = {}   # Pixabay asks for searches to be cached for 24 hours
+
+
+def _pixabay_search(query: str, per_page: int, page: int, orientation: str | None) -> list[dict]:
+    key = (os.getenv("PIXABAY_API_KEY") or "").strip()
+    if not key:
+        raise MediaError("no PIXABAY_API_KEY on this server")
+    ck = (query.lower(), per_page, page, orientation)
+    with _cache_lock:
+        hit = _px_cache.get(ck)
+    if hit and time.time() - hit[0] < 23 * 3600:
+        return hit[1]
+    params = {"key": key, "q": query, "image_type": "photo", "safesearch": "true", "per_page": max(3, per_page),
+              "page": page, "lang": "en"}
+    if orientation:
+        params["orientation"] = orientation
+    r = requests.get("https://pixabay.com/api/", params=params, timeout=TIMEOUT)
+    r.raise_for_status()
+    out = [_remember(_pixabay(h)) for h in r.json().get("hits", [])][:per_page]
+    with _cache_lock:
+        if len(_px_cache) > 500:
+            _px_cache.clear()
+        _px_cache[ck] = (time.time(), out)
+    return out
+
+
+ORIENT_PIXABAY = {"landscape": "horizontal", "portrait": "vertical"}
 ORIENT = {"landscape": ("landscape", "landscape"), "portrait": ("portrait", "portrait"), "square": ("squarish", "square")}
 
 
@@ -362,12 +417,13 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
     results: dict[str, list] = {}
     errors: dict[str, str] = {}
     if provider == "all":   # only the providers this server has keys for (Pexels has paused new keys)
-        want = tuple(p for p, k in (("unsplash", "UNSPLASH_ACCESS_KEY"), ("pexels", "PEXELS_API_KEY")) if os.getenv(k))
+        want = tuple(p for p, k in (("unsplash", "UNSPLASH_ACCESS_KEY"), ("pixabay", "PIXABAY_API_KEY"),
+                                    ("pexels", "PEXELS_API_KEY")) if (os.getenv(k) or "").strip())
         if not want:
-            raise MediaError("Stock search isn't set up: add UNSPLASH_ACCESS_KEY to the server's .env.")
+            raise MediaError("Stock search isn't set up: add UNSPLASH_ACCESS_KEY or PIXABAY_API_KEY to the server's .env.")
     else:
         want = (provider,)
-    each = per_page if len(want) == 1 else max(1, per_page // 2 + per_page % 2)
+    each = per_page if len(want) == 1 else max(1, -(-per_page // len(want)))
     for prov in want:
         try:
             if prov == "unsplash":
@@ -392,6 +448,8 @@ def search_stock(query: str, provider: str = "all", page: int = 1, per_page: int
                                  headers={"Authorization": key})
                 r.raise_for_status()
                 results[prov] = [_remember(_pexels(p)) for p in r.json().get("photos", [])]
+            elif prov == "pixabay":
+                results[prov] = _pixabay_search(query, each, page, ORIENT_PIXABAY.get(orientation))
             else:
                 raise MediaError(f"unknown provider {prov!r}")
         except (requests.RequestException, MediaError, KeyError, ValueError) as exc:
@@ -420,6 +478,14 @@ def stock_photo(provider: str, provider_id: str) -> dict:
     if not re.fullmatch(r"[\w-]{1,64}", str(provider_id)):
         raise MediaError("bad photo id")
     try:
+        if provider == "pixabay":
+            r = requests.get("https://pixabay.com/api/", timeout=TIMEOUT,
+                             params={"key": (os.getenv("PIXABAY_API_KEY") or "").strip(), "id": provider_id})
+            r.raise_for_status()
+            hits = r.json().get("hits") or []
+            if not hits:
+                raise MediaError("Pixabay doesn't have that image any more")
+            return _remember(_pixabay(hits[0]))
         if provider == "unsplash":
             r = requests.get(f"https://api.unsplash.com/photos/{provider_id}", timeout=TIMEOUT,
                              headers={"Authorization": f"Client-ID {os.getenv('UNSPLASH_ACCESS_KEY', '')}",
@@ -507,17 +573,32 @@ def add_stock(db: Database, user: dict | None, story_id: int, provider: str, pro
               role: str = "gallery", alt: str = "", caption: str = "", position: str | None = None,
               photo: dict | None = None) -> int:
     _check(db, user, story_id)
-    photo = photo or stock_photo(provider, provider_id)
+    photo = dict(photo or stock_photo(provider, provider_id))
+    keys: list = []
+    if photo.get("copy"):   # Pixabay: no permanent hotlinking, so keep our own copy in R2
+        if not storage():
+            raise MediaError("Pixabay images are copied to our storage, which isn't set up yet (R2 keys).")
+        src = photo["url"] or ""
+        if urlsplit(src).scheme != "https" or urlsplit(src).netloc not in PIXABAY_HOSTS:
+            raise MediaError("unexpected Pixabay image address")
+        try:
+            r = requests.get(src, timeout=30)
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            raise MediaError(f"couldn't download the image from Pixabay: {exc}") from exc
+        saved = save_file(story_id, r.content, "px")
+        photo.update(url=saved["url"], sizes=saved["sizes"], width=saved["width"], height=saved["height"])
+        keys = saved["storage_keys"]
     role = _role(role)
     iid = db.insert(
         """insert into newsroom.story_images (story_id, kind, provider, status, role, position, url, sizes, width, height,
-             alt, caption, credit, credit_url, photographer, photographer_url, source_url, provider_id, created_by,
-             created_at, updated_at)
-           values (?, 'stock', ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id""",
+             alt, caption, credit, credit_url, photographer, photographer_url, source_url, provider_id, storage_keys,
+             created_by, created_at, updated_at)
+           values (?, 'stock', ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id""",
         (story_id, photo["provider"], role, position, photo["url"], db.j(photo["sizes"]), photo.get("width"),
          photo.get("height"), (alt or photo.get("alt") or "").strip()[:300], (caption or "").strip()[:500] or None,
          photo["credit"], photo["credit_url"], photo["photographer"], photo["photographer_url"], photo["source_url"],
-         photo["provider_id"], user["id"] if user else None, utcnow(), utcnow()))
+         photo["provider_id"], db.j(keys), user["id"] if user else None, utcnow(), utcnow()))
     if role == "hero":
         _make_hero(db, story_id, iid)
     db.commit()
@@ -781,9 +862,10 @@ def auto_images(db: Database, story: dict, client=None) -> dict:
         prompt = (ev or {}).get("image_prompt") or f"An editorial scene that illustrates: {rev.get('headline')}"
         candidates = []
         st = status()
-        if st["unsplash"] or st["pexels"]:
+        if st["unsplash"] or st["pexels"] or st["pixabay"]:
             found = search_stock(query, "all", per_page=int(auto.get("stock_results", 12)), country=story.get("country"))
-            candidates = [x for x in found["results"] if (x.get("width") or 0) >= 1200]
+            candidates = [x for x in found["results"] if (x.get("width") or 0) >= 1200
+                          and (not x.get("copy") or st["storage"])]   # Pixabay needs our storage
         inline_n = int(auto.get("inline_images", 1))
         if candidates:
             out = client.generate_json(model=model_name("desk", client), system=CHOOSE_SYSTEM,
