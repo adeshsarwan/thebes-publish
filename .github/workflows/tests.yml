@@ -1,0 +1,50 @@
+name: Tests and deploy
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"   # same as the server (Ubuntu 22.04)
+      - run: pip install -r requirements.txt
+      - name: Tests (throwaway SQLite databases, mock AI)
+        run: python -m unittest discover -s tests -v
+
+  deploy:
+    # every push to main that passes the tests goes to the server
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check the deploy secrets are set
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ] || [ -z "$KNOWN" ]; then
+            echo "::warning::Deploy skipped: set DEPLOY_HOST, DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS (see deploy/README.md)."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+      - name: Deploy to the server
+        if: env.SKIP != '1'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+          # the key is locked to one command on the server: sudo /usr/local/sbin/finance-hub-update
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes fhdeploy@"$HOST"

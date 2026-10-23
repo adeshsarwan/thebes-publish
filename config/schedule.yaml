@@ -1,0 +1,18 @@
+# Daily pulls, each at a local time in its region's own time zone, so
+# daylight-saving changes in New York, London and Sydney are handled automatically.
+# The scheduler checks every 10 minutes; a region runs once per local day, at or
+# after its time, and is skipped if the Mac was off for more than catch_up_hours.
+catch_up_hours: 6
+regions:
+  - id: new-york
+    timezone: America/New_York
+    time: "12:00"
+    countries: [US, CA]          # Canada's main markets (Toronto) share New York's time zone
+  - id: london
+    timezone: Europe/London
+    time: "12:00"
+    countries: [UK]
+  - id: sydney
+    timezone: Australia/Sydney
+    time: "12:00"
+    countries: [AU]

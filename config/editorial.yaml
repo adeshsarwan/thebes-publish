@@ -1,0 +1,101 @@
+# Editorial policy: what we run, how we write it, and what we refuse to publish.
+
+desk:
+  lookback_hours: 72          # only evaluate items published in this window
+  cluster_similarity: 0.5     # title similarity (see text.title_similarity) to merge items into one story
+  run_threshold: 60           # impact_score (0-100) needed to commission a story
+  hold_threshold: 45          # between hold and run = "hold" (re-evaluate if more sources appear)
+  max_stories_per_country: 4  # per pipeline run
+  # Each dimension is scored 1-5 by the model; weights sum to 1.
+  weights:
+    wallet_impact: 0.35   # how directly it changes readers' money (rates, bills, tax, benefits, fees)
+    breadth: 0.20         # share of readers in that country affected
+    actionability: 0.20   # is there something concrete a reader can do
+    urgency: 0.15         # deadlines, effective dates, time-limited windows
+    novelty: 0.10         # genuinely new information vs recycled/evergreen
+  # Hard rejects returned by the model as flags.
+  reject_flags: [promotional, product_review, not_personal_finance, corporate_admin]
+  # Cheap regex pre-filter applied to titles before spending model calls.
+  prefilter_reject_patterns:
+    - "(?i)\\breview\\b:?"
+    - "(?i)^best\\b.*\\b(20\\d\\d|cards?|accounts?|apps?)\\b"
+    - "(?i)\\bpromo(tion)? code\\b"
+    - "(?i)\\bsign[- ]up bonus\\b"
+    - "(?i)\\bsweepstakes\\b"
+    - "(?i)\\b(vs\\.?|versus)\\b.*\\b(card|account|app)\\b"
+    - "(?i)\\bappointment of\\b"          # personnel announcements
+    - "(?i)\\bbank ?notes?\\b"
+
+style_guide: |
+  You are a senior personal-finance reporter writing for {country_name} readers.
+  You do NOT summarise the source. You write a NEW story whose subject is the
+  reader's money: the source event is the news peg, the analysis is ours.
+
+  Story shape (every story):
+  1. Headline: lead with the reader impact, not the institution.
+     Good: "Savers lose out as rates hold — but tracker borrowers get a breather"
+     Bad:  "Bank of England announces Monetary Policy Committee decision"
+  2. Dek (one sentence): who is affected and how much it matters.
+  3. What happened: 2-3 sentences of verified facts in our own words, attributed
+     ("the Federal Reserve said on Tuesday..."). Only facts present in the
+     source material. No quotes longer than 10 words.
+  4. What it means for your money: the core of the piece. Trace the
+     transmission: event -> product (mortgage, card, savings, tax bill) ->
+     reader's monthly budget. Separate what is certain from what is expected.
+  5. Who is affected: name the groups (e.g. variable-rate borrowers, renters,
+     first-time buyers, retirees, self-employed filers) and who is NOT.
+  6. The numbers: one worked example with round illustrative figures, clearly
+     labelled "Illustrative example". Show the arithmetic.
+  7. What to do now: 3-5 concrete, general steps. Informational, not
+     personalised advice. Include a "don't" if a common mistake applies.
+  8. Key takeaways: 3 bullets.
+
+  Voice and locale:
+  - Write in {spelling}. Currency: {currency}.
+  - Use local terms only: {glossary}.
+  - Plain English, short paragraphs, active voice. Explain jargon on first use.
+  - Never invent figures, dates, quotes, or rule changes. If the source does not
+    say it, do not state it as fact; phrase expectations as expectations.
+  - Never use: "guaranteed", "free money", "government grant", "risk-free",
+    "you must act now". No clickbait, no fear-mongering.
+  - Do not tell an individual what to buy, sell or invest in.
+
+guardrails:
+  min_words: 450
+  max_words: 1000
+  max_headline_chars: 95
+  # Originality vs the source material (titles + summaries + any fetched text).
+  max_shared_run_words: 12      # longest verbatim word run allowed
+  max_ngram_overlap: 0.12       # share of the article's 5-grams found in the source
+  # Numbers in factual sections must appear in the sources; the illustrative
+  # example section is exempt.
+  require_numbers_in_sources: true
+  banned_terms:
+    - government grant
+    - free money
+    - guaranteed payout
+    - guaranteed approval
+    - risk-free
+    - risk free
+    - get rich
+    - act now
+    - secret trick
+    - they don't want you to know
+  advice_patterns:
+    - "(?i)\\byou should (buy|sell|invest in)\\b"
+    - "(?i)\\bwe recommend (buying|selling|investing)\\b"
+    - "(?i)\\b(buy|sell) (this|these) (stock|shares|fund)s?\\b"
+  disclosure: >-
+    This article is for general information only and is not financial, tax or
+    legal advice. Consider your own circumstances and speak to a qualified,
+    regulated adviser before making decisions. Figures in illustrative examples
+    are hypothetical.
+  max_regenerations: 1          # retry once with guardrail feedback, then send to review
+
+# Automatic publishing: AI drafts that clear these bars go live without waiting
+# for an editor. An editor can unpublish any story and assign it to a copy editor.
+autopublish:
+  enabled: true
+  score_above: 60                # publish automatically when the desk impact score (0-100) is above this
+  require_guardrails_pass: true  # never auto-publish a draft with guardrail errors
+  responsible_editor: maya-fernandes   # slug of the editor named on auto-published stories

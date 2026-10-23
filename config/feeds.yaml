@@ -1,0 +1,157 @@
+# Starting list of feeds. These are copied into the database the first time the
+# pipeline runs; after that, manage sources in the newsroom desk (Sources page).
+# Editing a source here does not change one that already exists in the database.
+#
+#
+# kind:          official  = central bank / regulator / tax / statistics agency
+#                publisher = commercial finance publisher
+# reuse:         public_domain | ogl (UK Open Government Licence) | crown_copyright_ca
+#                | link_only (facts only; never reproduce wording; always link out)
+# full_text:     allow the writer to fetch the source page body for facts.
+#                Only enable for public_domain / ogl sources.
+# verified:      date the URL last returned a well-formed feed.
+#
+# Official sources are the backbone of the news desk: they publish the actual
+# events (rate decisions, CPI prints, tax changes, enforcement) and are
+# reuse-friendly. Publisher feeds add consumer angles but are heavy on
+# evergreen/affiliate content, which the editorial desk filters out.
+
+sources:
+  # ---------------- United States ----------------
+  - id: us-fed-press
+    name: Federal Reserve Board
+    country: US
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    kind: official
+    reuse: public_domain
+    full_text: true
+    verified: 2026-10-15
+
+  - id: us-cfpb-newsroom
+    name: Consumer Financial Protection Bureau
+    country: US
+    url: https://www.consumerfinance.gov/about-us/newsroom/feed/
+    kind: official
+    reuse: public_domain
+    full_text: true
+    verified: 2026-10-15
+
+  - id: us-bls-cpi
+    name: Bureau of Labor Statistics (CPI)
+    country: US
+    url: https://www.bls.gov/feed/cpi.rss
+    kind: official
+    reuse: public_domain
+    full_text: true
+    verified: 2026-10-15
+
+  - id: us-nerdwallet
+    name: NerdWallet
+    country: US
+    url: https://www.nerdwallet.com/blog/feed/
+    kind: publisher
+    reuse: link_only
+    full_text: false
+    verified: 2026-10-15
+
+  - id: us-bankrate
+    name: Bankrate
+    country: US
+    url: https://www.bankrate.com/rss/   # TODO: find the per-section feed URL; this index page did not load
+    kind: publisher
+    reuse: link_only
+    full_text: false
+    active: false
+
+  # ---------------- United Kingdom ----------------
+  - id: uk-boe-news
+    name: Bank of England
+    country: UK
+    url: https://www.bankofengland.co.uk/rss/news
+    kind: official
+    reuse: ogl
+    full_text: true
+    verified: 2026-10-15
+
+  - id: uk-hmrc
+    name: HM Revenue & Customs (GOV.UK)
+    country: UK
+    url: https://www.gov.uk/government/organisations/hm-revenue-customs.atom
+    kind: official
+    reuse: ogl
+    full_text: true
+    verified: 2026-10-15
+
+  - id: uk-fca-news
+    name: Financial Conduct Authority
+    country: UK
+    url: https://www.fca.org.uk/news/rss.xml   # non-RFC822 dates; parser handles them
+    kind: official
+    reuse: ogl
+    full_text: true
+    verified: 2026-10-15
+
+  - id: uk-mse-news
+    name: MoneySavingExpert
+    country: UK
+    url: https://www.moneysavingexpert.com/news/feeds/news.rss   # TODO: returned non-XML on check
+    kind: publisher
+    reuse: link_only
+    full_text: false
+    active: false
+
+  # ---------------- Canada ----------------
+  - id: ca-boc-press
+    name: Bank of Canada
+    country: CA
+    url: https://www.bankofcanada.ca/content_type/press-releases/feed/
+    kind: official
+    reuse: crown_copyright_ca
+    full_text: false
+    verified: 2026-10-15
+
+  - id: ca-moneysense
+    name: MoneySense
+    country: CA
+    url: https://www.moneysense.ca/feed/
+    kind: publisher
+    reuse: link_only
+    full_text: false
+    verified: 2026-10-15
+
+  - id: ca-ratehub
+    name: Ratehub
+    country: CA
+    url: https://www.ratehub.ca/blog/feed/
+    kind: publisher
+    reuse: link_only
+    full_text: false
+    verified: 2026-10-15
+
+  # ---------------- Australia ----------------
+  - id: au-rba-media
+    name: Reserve Bank of Australia
+    country: AU
+    url: https://www.rba.gov.au/rss/rss-cb-media-releases.xml
+    kind: official
+    reuse: link_only   # check RBA copyright terms before enabling full_text
+    full_text: false
+    verified: 2026-10-15
+
+  - id: au-asic-media
+    name: ASIC
+    country: AU
+    url: https://asic.gov.au/newsroom/media-releases/rss   # TODO: URL unverified
+    kind: official
+    reuse: link_only
+    full_text: false
+    active: false
+
+  - id: au-abs-media
+    name: Australian Bureau of Statistics
+    country: AU
+    url: https://www.abs.gov.au/rss/media-releases   # TODO: URL unverified
+    kind: official
+    reuse: link_only
+    full_text: false
+    active: false

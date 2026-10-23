@@ -1,0 +1,96 @@
+# Regional keyword & taxonomy engine.
+#
+# topics:   keyword lists used to tag raw items on ingest. "common" keywords
+#           apply to every country; country lists add local jargon.
+# locale:   voice settings the writer uses per market.
+# glossary: concept -> local term(s). The writer must use the local term for
+#           the target country, never another market's (no "401(k)" in a UK piece).
+
+topics:
+  interest_rates:
+    common: [interest rate, policy rate, rate decision, rate cut, rate hike, rate hold, basis points, monetary policy]
+    US: [federal funds, fomc, fed funds]
+    UK: [bank rate, mpc, monetary policy committee]
+    CA: [overnight rate, policy rate]
+    AU: [cash rate]
+  inflation:
+    common: [inflation, consumer price index, cpi, prices rose, cost of living]
+    UK: [cpih, rpi]
+  mortgages:
+    common: [mortgage, home loan, fixed rate, variable rate, refinance, housing market]
+    US: [heloc, 30-year fixed, arm]
+    UK: [remortgage, tracker, standard variable rate, svr]
+    CA: [stress test, heloc, amortization, cmhc]
+    AU: [offset account, lmi, lenders mortgage insurance]
+  credit_scores:
+    common: [credit score, credit report, credit rating, credit file]
+    US: [fico, vantagescore]
+    UK: [clearscore]
+  credit_cards_debt:
+    common: [credit card, debt, overdraft, personal loan, buy now pay later, bnpl, collections, balance transfer]
+    UK: [section 75, ccj, iva]
+    CA: [consumer proposal]
+    AU: [debt agreement]
+  tax:
+    common: [tax, refund, deduction, allowance, filing deadline]
+    US: [irs, 1040, w-2, tax credit, standard deduction]
+    UK: [hmrc, self assessment, personal allowance, national insurance, paye, isa allowance]
+    CA: [cra, tax return, gst credit, ccb]
+    AU: [ato, tax return, medicare levy, super guarantee]
+  savings_investing:
+    common: [savings account, savings rate, deposit, interest on savings, etf, index fund]
+    US: [401(k), ira, roth, hysa, cd]
+    UK: [isa, lisa, sipp, premium bonds]
+    CA: [tfsa, rrsp, fhsa, gic, resp]
+    AU: [superannuation, super fund, term deposit, smsf]
+  insurance:
+    common: [insurance, premium, claim, policyholder]
+    US: [medicare, aca, marketplace]
+    UK: [motor finance, car finance]
+  consumer_protection:
+    common: [scam, fraud, enforcement, fine, penalty, redress, compensation, complaint, ban]
+    US: [cfpb, ftc]
+    UK: [fca, ombudsman]
+    CA: [fcac, osfi]
+    AU: [asic, accc]
+  banking:
+    common: [bank account, checking, current account, fees, debanking, bank note, payments]
+  jobs_income:
+    common: [unemployment, jobs report, wages, earnings, payroll, pension, benefits, social security]
+
+locale:
+  US:
+    spelling: American English
+    currency: "$ (USD)"
+    regulators: [Federal Reserve, CFPB, IRS, FDIC]
+  UK:
+    spelling: British English
+    currency: "£ (GBP)"
+    regulators: [Bank of England, FCA, HMRC, Financial Ombudsman Service]
+  CA:
+    spelling: Canadian English
+    currency: "$ (CAD)"
+    regulators: [Bank of Canada, FCAC, CRA, OSFI]
+  AU:
+    spelling: Australian English
+    currency: "$ (AUD)"
+    regulators: [Reserve Bank of Australia, ASIC, ATO, APRA]
+
+# Product/agency names that only make sense in one market. A guardrail warns
+# when a story for one country uses another country's terms.
+exclusive_terms:
+  US: [401(k), Roth IRA, FICO, IRS, CFPB, FDIC, Social Security, HELOC]
+  UK: [ISA, SIPP, HMRC, FCA, FSCS, Bank Rate, National Insurance, remortgage]
+  CA: [TFSA, RRSP, FHSA, CRA, FCAC, CDIC, HELOC, chequing]
+  AU: [superannuation, ATO, ASIC, APRA, cash rate, Medicare levy]
+
+glossary:
+  central_bank_rate:   {US: federal funds rate, UK: Bank Rate, CA: overnight rate, AU: cash rate}
+  credit_bureaus:      {US: "Equifax, Experian and TransUnion (FICO / VantageScore models)", UK: "Experian, Equifax and TransUnion", CA: "Equifax and TransUnion", AU: "Equifax, Experian and illion"}
+  tax_free_savings:    {US: "Roth IRA / HSA", UK: "ISA (cash, stocks & shares, Lifetime)", CA: TFSA, AU: "super (concessional contributions)"}
+  retirement_account:  {US: "401(k) / IRA", UK: "workplace pension / SIPP", CA: RRSP, AU: superannuation}
+  home_equity_borrowing: {US: HELOC, UK: "remortgage / further advance", CA: HELOC, AU: "redraw / equity release"}
+  checking_account:    {US: checking account, UK: current account, CA: chequing account, AU: transaction account}
+  tax_authority:       {US: IRS, UK: HMRC, CA: CRA, AU: ATO}
+  consumer_regulator:  {US: CFPB, UK: FCA, CA: FCAC, AU: ASIC}
+  deposit_protection:  {US: "FDIC insurance (up to $250,000)", UK: "FSCS protection (check current limit)", CA: "CDIC coverage", AU: "Financial Claims Scheme"}
