@@ -140,6 +140,10 @@ class Base(unittest.TestCase):
 
 # =========================================================================
 class PipelineTest(Base):
+    def test_currency_units_need_a_word_boundary(self):
+        from pipeline.guardrails import unsupported_numbers
+        self.assertEqual(unsupported_numbers("earn more than £35,000 must repay; a £35m deal", "x"), ["£35,000", "£35m"])
+
     def test_parse_dates(self):
         from pipeline.feeds import parse_date
         self.assertEqual(parse_date("Tue, 13 Oct 2026 16:15:00 +0000").day, 13)

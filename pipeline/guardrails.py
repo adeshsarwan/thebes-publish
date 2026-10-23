@@ -16,7 +16,7 @@ FACT_FIELDS = ("headline", "dek", "what_happened", "money_impact", "who_is_affec
 
 # Financial-looking figures: percentages, currency amounts, decimals, "basis points".
 _NUM = re.compile(
-    r"(?:[$£€]\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:bn|billion|m|million|k))?)"
+    r"(?:[$£€]\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:bn|billion|m|million|k)\b)?)"
     r"|(?:\d[\d,]*(?:\.\d+)?\s?(?:%|per ?cent|percentage points?|basis points|bps))"
     r"|(?:\d+\.\d+)"
     r"|(?:\d+\s?[¼½¾]\s?%?)",
