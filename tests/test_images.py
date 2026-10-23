@@ -28,6 +28,8 @@ def png(w=800, h=450, color=(200, 80, 40)) -> bytes:
 class FakeResp:
     def __init__(self, payload, status=200):
         self.payload, self.status_code = payload, status
+        self.headers = {"Retry-After": "0"} if status == 429 else {}
+        self.ok = status < 400
 
     def json(self):
         return self.payload
@@ -52,6 +54,7 @@ PEXELS = {"photos": [{
 PIXABAY = {"total": 1, "hits": [{
     "id": 4455, "pageURL": "https://pixabay.com/photos/signing-contract-4455/", "tags": "contract, signing, business",
     "webformatURL": "https://pixabay.com/get/abc_640.jpg", "largeImageURL": "https://pixabay.com/get/abc_1280.jpg",
+    "previewURL": "https://cdn.pixabay.com/photo/2020/01/02/10/11/signing-4455_150.jpg",
     "imageWidth": 5000, "imageHeight": 3000, "user": "Pat", "user_id": 77}]}
 
 
@@ -60,7 +63,9 @@ def fake_get(calls):
         calls.append((url, params, headers))
         if url == "https://pixabay.com/api/":
             return FakeResp(PIXABAY)
-        if url.startswith("https://pixabay.com/get/"):
+        if url.startswith("https://cdn.pixabay.com/photo/") and url.endswith("_1280.jpg"):
+            return FakeResp({}, 429)                                    # rate-limited: falls back to largeImageURL
+        if url.startswith("https://pixabay.com/get/") or url.startswith("https://cdn.pixabay.com/"):
             r = FakeResp({}); r.content = png(1280, 768); r.headers = {"Content-Type": "image/png"}
 
             class Raw:
@@ -176,7 +181,9 @@ class ImageUnitTest(ImagesBase):
         img = media.get_image(db, iid)
         self.assertTrue(img["url"].startswith("/media/stories/"), img["url"])        # our copy, not a Pixabay hotlink
         self.assertEqual((img["provider"], img["width"]), ("pixabay", 1280))
-        self.assertTrue(px["thumb"].startswith("/stock-preview?u=https%3A%2F%2Fpixabay.com%2Fget%2F"))
+        self.assertTrue(px["thumb"].startswith("/stock-preview?u=https%3A%2F%2Fcdn.pixabay.com%2Fphoto%2F"), px["thumb"])
+        self.assertIn("signing-4455_640.jpg", px["thumb"])
+        self.assertEqual(px["download_urls"][0], "https://cdn.pixabay.com/photo/2020/01/02/10/11/signing-4455_1280.jpg")
         with mock.patch("newsroom.media.requests.get", side_effect=fake_get([])):
             data, ctype = media.fetch_preview("https://pixabay.com/get/abc_640.jpg")
         self.assertEqual(ctype, "image/png")

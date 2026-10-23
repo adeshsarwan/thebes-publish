@@ -338,16 +338,25 @@ def _pexels(p: dict) -> dict:
 PIXABAY_HOSTS = ("pixabay.com", "cdn.pixabay.com")
 
 
+def _cdn_size(preview: str | None, size: int) -> str | None:
+    """cdn.pixabay.com/photo/.../name-123_150.jpg -> the same photo at 640 or 1280 px. Pixabay's CDN
+    serves these sizes; its pixabay.com/get/ links are rate-limited and refuse other sites."""
+    if preview and re.match(r"https://cdn\.pixabay\.com/photo/.+_150\.(jpg|jpeg|png)$", preview):
+        return re.sub(r"_150\.(jpg|jpeg|png)$", rf"_{size}.\1", preview)
+    return None
+
+
 def _pixabay(h: dict) -> dict:
     """Pixabay forbids permanent hotlinking: these addresses are for the search results only.
     When a photo is used, add_stock copies it into our own storage (R2)."""
     name = h.get("user") or "Unknown"
     page_url = h.get("pageURL") or ""
     tags = (h.get("tags") or "").strip()
-    return {"provider": "pixabay", "provider_id": str(h["id"]), "url": h.get("largeImageURL") or h.get("webformatURL"),
-            # Pixabay's image links don't load when shown straight from another site, so the desk shows
-            # search thumbnails through its own /stock-preview proxy (search results only, as Pixabay allows)
-            "thumb": "/stock-preview?" + urlencode({"u": h.get("webformatURL") or h.get("previewURL") or ""}),
+    big = [u for u in (_cdn_size(h.get("previewURL"), 1280), h.get("largeImageURL"), h.get("webformatURL")) if u]
+    return {"provider": "pixabay", "provider_id": str(h["id"]), "url": big[0] if big else None, "download_urls": big,
+            # search thumbnails go through the desk's /stock-preview proxy (search results only, as Pixabay allows)
+            "thumb": "/stock-preview?" + urlencode({"u": _cdn_size(h.get("previewURL"), 640) or h.get("webformatURL")
+                                                         or h.get("previewURL") or ""}),
             "preview": h.get("previewURL"), "sizes": {},
             "width": h.get("imageWidth"), "height": h.get("imageHeight"),
             "alt": (tags[:1].upper() + tags[1:]) if tags else "",
@@ -357,6 +366,33 @@ def _pixabay(h: dict) -> dict:
 
 
 _px_cache: dict[tuple, tuple[float, list]] = {}   # Pixabay asks for searches to be cached for 24 hours
+
+
+def _download_pixabay(urls: list[str]) -> bytes:
+    """Try the CDN copy first, then Pixabay's own links; wait and retry once when rate-limited."""
+    last = None
+    for src in urls:
+        if not src or urlsplit(src).scheme != "https" or urlsplit(src).netloc not in PIXABAY_HOSTS:
+            continue
+        for attempt in range(2):
+            try:
+                r = requests.get(src, timeout=30, headers=FETCH_HEADERS)
+                if r.status_code == 429 and attempt == 0:
+                    time.sleep(min(5, float(r.headers.get("Retry-After") or 2)))
+                    continue
+                r.raise_for_status()
+                if not (r.headers.get("Content-Type") or "image/").startswith("image/"):
+                    raise MediaError("Pixabay didn't send an image")
+                return r.content
+            except (requests.RequestException, MediaError) as exc:
+                last = exc
+                break
+    if last is not None and "429" in str(last):
+        raise MediaError("Pixabay is limiting downloads right now; wait a minute and try again.")
+    raise MediaError(f"couldn't download the image from Pixabay: {last}")
+
+
+_px_sem = threading.BoundedSemaphore(4)   # previews: at most 4 Pixabay fetches at a time
 
 
 FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StoryHub/1.0; +https://publish.thebesads.com)",
@@ -374,12 +410,13 @@ def fetch_preview(url: str) -> tuple[bytes, str]:
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
     try:
-        r = requests.get(url, timeout=TIMEOUT, headers=FETCH_HEADERS, stream=True)
-        r.raise_for_status()
-        ctype = r.headers.get("Content-Type", "").split(";")[0]
-        if not ctype.startswith("image/"):
-            raise MediaError("Pixabay didn't send an image")
-        data = r.raw.read(3 * 1024 * 1024 + 1, decode_content=True)
+        with _px_sem:
+            r = requests.get(url, timeout=TIMEOUT, headers=FETCH_HEADERS, stream=True)
+            r.raise_for_status()
+            ctype = r.headers.get("Content-Type", "").split(";")[0]
+            if not ctype.startswith("image/"):
+                raise MediaError("Pixabay didn't send an image")
+            data = r.raw.read(3 * 1024 * 1024 + 1, decode_content=True)
         if len(data) > 3 * 1024 * 1024:
             raise MediaError("preview too large")
     except requests.RequestException as exc:
@@ -616,15 +653,8 @@ def add_stock(db: Database, user: dict | None, story_id: int, provider: str, pro
     if photo.get("copy"):   # Pixabay: no permanent hotlinking, so keep our own copy in R2
         if not storage():
             raise MediaError("Pixabay images are copied to our storage, which isn't set up yet (R2 keys).")
-        src = photo["url"] or ""
-        if urlsplit(src).scheme != "https" or urlsplit(src).netloc not in PIXABAY_HOSTS:
-            raise MediaError("unexpected Pixabay image address")
-        try:
-            r = requests.get(src, timeout=30, headers=FETCH_HEADERS)
-            r.raise_for_status()
-        except requests.RequestException as exc:
-            raise MediaError(f"couldn't download the image from Pixabay: {exc}") from exc
-        saved = save_file(story_id, r.content, "px")
+        data = _download_pixabay(photo.get("download_urls") or [photo["url"]])
+        saved = save_file(story_id, data, "px")
         photo.update(url=saved["url"], sizes=saved["sizes"], width=saved["width"], height=saved["height"])
         keys = saved["storage_keys"]
     role = _role(role)
