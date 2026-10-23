@@ -147,6 +147,10 @@ h1.page{font-family:var(--serif);font-size:27px;margin:0 0 4px}.sub{color:var(--
 .s-approved,.s-published,.run{background:var(--good-bg);color:var(--good)}.s-unpublished,.s-killed,.reject{background:var(--bad-bg);color:var(--bad)}
 .hold{background:var(--warn-bg);color:var(--warn)}.pill.cat{background:transparent;border:1px solid var(--line);color:var(--ink)}.pending{background:var(--line);color:var(--muted)}
 .bad{color:var(--bad)}.brief{font-size:14px;line-height:1.6}.brief h3{font-size:13px;margin:14px 0 4px}.timeline-line{font-size:13px;color:var(--muted);margin:4px 0 2px}.timeline-line b{color:var(--ink);font-weight:600}.gr-ok{background:var(--good-bg);color:var(--good)}.gr-bad{background:var(--bad-bg);color:var(--bad)}
+.img-prompts{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:14px 0}.img-prompts summary{cursor:pointer;font-weight:600}
+.img-prompts .img-enable{display:flex;gap:8px;align-items:center;margin:10px 0 0;color:var(--ink)}
+.img-prompt-row{display:grid;grid-template-columns:1fr 150px 100px;gap:8px;align-items:start;margin-top:8px}
+@media (max-width:700px){.img-prompt-row{grid-template-columns:1fr 1fr}.img-prompt-row textarea{grid-column:1/-1}}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:26px;align-items:start}
 article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:34px 42px;font-family:var(--serif);font-size:18px;line-height:1.65}
 article h1{font-size:33px;line-height:1.15;margin:0 0 12px}article h2{font-family:var(--sans);font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin:30px 0 8px}
@@ -947,9 +951,11 @@ def _options(values, selected, labels: dict | None = None) -> str:
 
 
 def image_prompt_rows(f: dict, suggested: str, saved=None) -> str:
-    """Image prompt rows for the pick-up form. They become draft images on the story; nothing is generated yet."""
+    """Optional AI image prompts for the pick-up form, off by default. Ticked, they are saved on the story
+    as drafts; nothing is generated (or paid for) until someone clicks Generate on the story."""
     c = media.cfg()
     saved = Database.unj(saved, []) or []
+    on = f.get("img_enable") == "1" or (bool(saved) and not any(k.startswith("img_") for k in f))
     rows = []
     for i in range(1, PROMPT_ROWS + 1):
         prev = saved[i - 1] if i - 1 < len(saved) else {}
@@ -960,14 +966,20 @@ def image_prompt_rows(f: dict, suggested: str, saved=None) -> str:
                     f'{"Main image: describe the scene" if i == 1 else "Another image for inside the story"}">{e(text)}</textarea>'
                     f'<select name="img_style_{i}" aria-label="Style">{_options(media.style_names(), style)}</select>'
                     f'<select name="img_aspect_{i}" aria-label="Shape">{_options(c["aspects"], aspect)}</select></div>')
-    more = "".join(rows[1:])
-    return (f'<fieldset class="img-prompts"><legend>Image prompts (optional)</legend>'
-            f'<p class="meta">Saved on the story as drafts. Generate them from the story when you want them '
-            f'(about $0.05 each with {e(c["model"])}). You can also search stock photos there.</p>'
-            f'{rows[0]}<details><summary>More image prompts</summary>{more}</details></fieldset>')
+    return (f'<details class="img-prompts"{" open" if on else ""}><summary>AI image prompts (optional)</summary>'
+            f'<label class="img-enable"><input type="checkbox" name="img_enable" value="1"{" checked" if on else ""}> '
+            f'Save these prompts with the story</label>'
+            f'<p class="meta">Leave this unticked to skip AI images: you can still pick stock photos on the story. Ticked, the prompts are '
+            f'saved as drafts and nothing is generated until someone clicks Generate (about $0.05 each with {e(c["model"])}).</p>'
+            + "".join(rows) + "</details>"
+            # typing a prompt ticks the box, so a written prompt isn't lost
+            + '<script>document.querySelectorAll(".img-prompts textarea").forEach(function(t){t.addEventListener("input",function(){'
+              'var b=document.querySelector(".img-prompts input[name=img_enable]");if(b&&t.value.trim())b.checked=true;});});</script>')
 
 
 def _prompts_from_form(form: dict) -> list[dict]:
+    if form.get("img_enable") != "1":
+        return []
     return [{"prompt": form.get(f"img_prompt_{i}", ""), "style": form.get(f"img_style_{i}"),
              "aspect": form.get(f"img_aspect_{i}")} for i in range(1, PROMPT_ROWS + 1)]
 

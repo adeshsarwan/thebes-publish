@@ -355,7 +355,9 @@ class ImageFlowTest(ImagesBase):
                              where not exists (select 1 from newsroom.stories s where s.cluster_id = c.id)
                              order by c.id limit 1""")["id"]
         page = web.pickup_page(db, maya, cid)[1]
-        self.assertIn("Image prompts", page)
+        self.assertIn("AI image prompts (optional)", page)
+        self.assertNotIn('name="img_enable" value="1" checked', page)          # off unless someone wants AI images
+        self.assertEqual(web._prompts_from_form({"img_prompt_1": "A scene of something"}), [])
         self.assertIn("A household reviewing bills at a kitchen table", page)       # the desk's suggestion
         rid = pickup.request_pickup(db, maya, cid, angle="What the change means for renters this winter",
                                     image_prompts=[{"prompt": "Renters checking a heating bill", "style": "photo", "aspect": "4:3"},
