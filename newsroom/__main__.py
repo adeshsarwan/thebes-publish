@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sources")
     p = sub.add_parser("pickup-run"); p.add_argument("request_id", type=int); p.add_argument("--mock", action="store_true")
     sub.add_parser("media-check", help="test R2 storage, Unsplash and Gemini image settings")
+    p = sub.add_parser("autopublish", help="publish qualifying AI drafts now (with images)"); p.add_argument("--mock", action="store_true")
     p = sub.add_parser("image-run", help="generate queued AI images (started by the desk)")
     p.add_argument("image_ids", type=int, nargs="+"); p.add_argument("--mock", action="store_true")
     p = sub.add_parser("pickup", help="editor override: research and draft a desk story now")
@@ -67,6 +68,25 @@ def main(argv: list[str] | None = None) -> int:
         story_id = run_request(args.request_id, get_client(args.mock))
         print(f"pick request {args.request_id} done: story {story_id}")
         return 0
+
+    if args.cmd == "autopublish":
+        import json as _json
+        from pipeline.db import connect
+        from pipeline.llm import get_client
+        from .pull import PullBusy, _lock
+        db = connect("newsroom")
+        try:
+            with _lock():   # never at the same time as a pull, which auto-publishes too
+                out = wf.autopublish(db, client=get_client(args.mock))
+        except PullBusy:
+            print("A pull is running; it auto-publishes when it finishes.")
+            return 0
+        finally:
+            db.close()
+        print(_json.dumps({k: v for k, v in out.items() if k != "stories"}, indent=1))
+        for s in out.get("stories", []):
+            print(f"  published {s['id']} ({s['country']}): {s['headline']}")
+        return 0 if not out.get("error") else 1
 
     if args.cmd == "media-check":
         from .media import check_setup

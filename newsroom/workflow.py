@@ -349,6 +349,48 @@ def site_seo(content: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- auto-publish
+def get_setting(db: Database, key: str) -> str | None:
+    row = db.fetchone("select value from newsroom.settings where key = ?", (key,))
+    return row["value"] if row else None
+
+
+def set_setting(db: Database, user: dict, key: str, value: str | None) -> None:
+    _require(user and user["role"] == "admin", "only admins can change desk settings")
+    db.execute("""insert into newsroom.settings (key, value, updated_by, updated_at) values (?,?,?,?)
+                  on conflict (key) do update set value = excluded.value, updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at""", (key, value, user["email"], utcnow()))
+    db.commit()
+
+
+def _find_editor(db: Database, who: str):
+    who = (who or "").strip()
+    return who, db.fetchone(
+        "select * from newsroom.users where (slug = ? or lower(email) = ?) and active = ? and role in ('editor', 'admin')",
+        (who, who.lower(), True))
+
+
+def responsible_editor(db: Database) -> tuple[dict | None, str | None]:
+    """(the editor named on auto-published stories, or None with the reason).
+    Order: AUTOPUBLISH_RESPONSIBLE_EDITOR in .env, then the Team page setting, then editorial.yaml."""
+    cfg = get_settings().editorial.get("autopublish") or {}
+    if not cfg.get("enabled"):
+        return None, "auto-publish is switched off in editorial.yaml"
+    who = os.getenv("AUTOPUBLISH_RESPONSIBLE_EDITOR") or get_setting(db, "autopublish_editor") or cfg.get("responsible_editor", "")
+    who, editor = _find_editor(db, who)
+    if not editor:
+        return None, (f"no responsible editor: {who!r} isn't an active editor or admin. "
+                      "Choose one on the Team page (Auto-publish).")
+    if editor["is_placeholder"] and get_settings().app_env == "production":
+        return None, (f"{editor['display_name']} is a placeholder profile and can't be named on published stories. "
+                      "Choose a real editor on the Team page (Auto-publish).")
+    return editor, None
+
+
+def autopublish_candidates(db: Database) -> int:
+    return db.fetchone("""select count(*) as n from newsroom.stories where status = 'ai_draft' and current_version = 1
+                          and auto_published = ? and origin = 'pipeline'""", (False,))["n"]
+
+
 def autopublish(db: Database, countries: list[str] | None = None, client=None) -> dict:
     """Publish untouched AI drafts that clear the score and guardrail bars.
 
@@ -365,18 +407,12 @@ def autopublish(db: Database, countries: list[str] | None = None, client=None) -
         return stats
 
     def find_editor(who: str):
-        who = (who or "").strip()
-        return who, db.fetchone(
-            "select * from newsroom.users where (slug = ? or lower(email) = ?) and active = ? and role in ('editor', 'admin')",
-            (who, who.lower(), True))
+        return _find_editor(db, who)
 
-    # AUTOPUBLISH_RESPONSIBLE_EDITOR (a user's slug or email) overrides the config file per server
-    who, editor = find_editor(os.getenv("AUTOPUBLISH_RESPONSIBLE_EDITOR") or cfg.get("responsible_editor", ""))
+    editor, problem = responsible_editor(db)
     if not editor:
-        stats["error"] = f"responsible editor {who!r} not found or not an active editor or admin"
-        return stats
-    if editor["is_placeholder"] and get_settings().app_env == "production":
-        stats["error"] = f"{editor['display_name']} is a placeholder profile; set a real responsible_editor"
+        stats["error"] = problem
+        _record_autopublish(db, stats)
         return stats
     default_editor = editor
 
@@ -436,7 +472,22 @@ def autopublish(db: Database, countries: list[str] | None = None, client=None) -
         db.commit()
         stats["published"] += 1
         stats["stories"].append({"id": story["id"], "country": story["country"], "headline": story["revision"]["headline"]})
+    _record_autopublish(db, stats)
     return stats
+
+
+def _record_autopublish(db: Database, stats: dict) -> None:
+    """Keep the last run's outcome so the desk can show why stories weren't published."""
+    import json as _json
+    summary = {k: stats.get(k) for k in ("published", "below_score", "guardrail_errors", "category_off", "images", "error")}
+    summary["at"] = utcnow()
+    try:
+        db.execute("""insert into newsroom.settings (key, value, updated_by, updated_at) values ('autopublish_last', ?, 'system', ?)
+                      on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at""",
+                   (_json.dumps(summary), utcnow()))
+        db.commit()
+    except Exception:   # noqa: BLE001  (never let bookkeeping stop publishing)
+        db.rollback()
 
 
 # --------------------------------------------------------------------------- queues

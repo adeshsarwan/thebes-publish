@@ -86,7 +86,7 @@ class AutoPublishTest(Base):
             self.assertTrue(wf.autopublish(db).get("disabled"))
             cfg["enabled"] = True
             cfg["responsible_editor"] = "daniel-okafor"                        # a copy editor can't be responsible
-            self.assertIn("not found", wf.autopublish(db)["error"])
+            self.assertIn("isn't an active editor", wf.autopublish(db)["error"])
         finally:
             cfg.clear()
             cfg.update(saved)
@@ -109,7 +109,7 @@ class AutoPublishTest(Base):
         db = self.prepared("autopub_env")
         os.environ["AUTOPUBLISH_RESPONSIBLE_EDITOR"] = "nobody@example.com"
         self.addCleanup(os.environ.pop, "AUTOPUBLISH_RESPONSIBLE_EDITOR", None)
-        self.assertIn("not found", wf.autopublish(db).get("error", ""))
+        self.assertIn("isn't an active editor", wf.autopublish(db).get("error", ""))
         os.environ["AUTOPUBLISH_RESPONSIBLE_EDITOR"] = self.user(db, "maya")["email"].upper()
         self.assertNotIn("error", wf.autopublish(db))
 
@@ -1193,3 +1193,36 @@ class AddedSourcesTest(Base):
             wf.perform(db, sid, "approve", maya, override=True, note="")
         s = wf.perform(db, sid, "approve", maya, override=True, note="£3,000 checked on gov.uk")
         self.assertEqual(s["status"], "approved")
+
+
+class AutopublishDeskTest(Base):
+    def test_paused_without_real_editor_then_set_on_team_page(self):
+        from unittest import mock
+        from newsroom import auth, web, workflow as wf
+        from pipeline.llm import MockClient
+        db = self.prepared("ap_desk")
+        boss, _ = auth.create_user(db, None, email="boss@example.com", display_name="Boss Person", role="admin",
+                                   password="Boss-password-2026")
+        boss = db.fetchone("select * from newsroom.users where email = 'boss@example.com'")
+        with mock.patch.dict(os.environ, {"APP_ENV": "production", "AUTOPUBLISH_RESPONSIBLE_EDITOR": ""}):
+            from pipeline.settings import get_settings
+            get_settings.cache_clear()
+            try:
+                out = wf.autopublish(db, client=MockClient())
+                self.assertEqual(out["published"], 0)
+                self.assertIn("placeholder", out["error"])
+                page = web.queue_page(db, boss, {})[1]
+                self.assertIn("Auto-publish is paused", page)
+                self.assertIn("/team#autopublish", page)
+                self.assertIn('action="/settings/autopublish-editor"', web.team_page(db, boss)[1])
+                with self.assertRaises(wf.WorkflowError):
+                    wf.set_setting(db, self.user(db, "daniel"), "autopublish_editor", "x")
+                wf.set_setting(db, boss, "autopublish_editor", "boss@example.com")
+                self.assertEqual(wf.responsible_editor(db)[0]["email"], "boss@example.com")
+                out = wf.autopublish(db, client=MockClient())
+                self.assertGreater(out["published"], 0, out)
+                self.assertIsNone(out.get("error"))
+                last = db.unj(wf.get_setting(db, "autopublish_last"))
+                self.assertEqual(last["published"], out["published"])
+            finally:
+                get_settings.cache_clear()

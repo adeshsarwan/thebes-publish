@@ -155,6 +155,15 @@ def summarise(result: dict) -> dict:
     }
 
 
+def start_autopublish() -> None:
+    """Run `python -m newsroom autopublish` in the background (images take a few seconds a story)."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log = open(LOG_DIR / f"autopublish-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.log", "ab")
+    subprocess.Popen([sys.executable, "-m", "newsroom", "autopublish"], cwd=str(ROOT), stdout=log,
+                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    log.close()
+
+
 def start_background(countries=None, started_by: str | None = None) -> None:
     """Launch a pull in a separate process (used by the desk's Pull now button)."""
     countries = normalise_countries(countries)

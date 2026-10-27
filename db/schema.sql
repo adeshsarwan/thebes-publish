@@ -344,6 +344,14 @@ create index if not exists story_images_story on newsroom.story_images (story_id
 
 -- Keys for the read-only Stories API (storyapi). Only a SHA-256 hash of each key is kept;
 -- the key itself is shown once, when an admin creates it on the desk's API page.
+-- Desk settings admins change on the Team page (e.g. who is named on auto-published stories).
+create table if not exists newsroom.settings (
+    key         text primary key,
+    value       text,
+    updated_by  text,
+    updated_at  timestamptz not null default now()
+);
+
 -- Pages editors add as sources while editing: read once, used as source material by the checks.
 create table if not exists newsroom.source_pages (
     url         text primary key,

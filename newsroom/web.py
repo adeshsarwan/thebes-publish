@@ -296,6 +296,29 @@ def no_access(cat: str | None) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- pages
+def autopublish_box(db: Database, actor: dict | None) -> str:
+    """For editors and admins: why auto-publish isn't publishing, and a button to run it now."""
+    if not actor or actor["role"] not in ("editor", "admin"):
+        return ""
+    editor, problem = wf.responsible_editor(db)
+    waiting = wf.autopublish_candidates(db)
+    last = Database.unj(wf.get_setting(db, "autopublish_last"), None) or {}
+    if problem:
+        fix = (' <a href="/team#autopublish">Choose the responsible editor</a>.' if actor["role"] == "admin" else " Ask an admin to fix it on the Team page.")
+        return f'<div class="issue error" style="margin-bottom:14px"><b>Auto-publish is paused:</b> {e(problem)}{fix}</div>'
+    if not waiting:
+        return ""
+    run = (f'<form class="inline" method="post" action="/autopublish"><button>Auto-publish now</button></form>'
+           if actor["role"] == "admin" else "")
+    lastline = ""
+    if last.get("at"):
+        lastline = (f' Last run {when(last["at"])}: {last.get("published") or 0} published, {last.get("below_score") or 0} below the score bar, '
+                    f'{last.get("guardrail_errors") or 0} with check errors.')
+    return (f'<div class="banner" style="display:flex;gap:12px;align-items:center;justify-content:space-between">'
+            f'<span>{waiting} untouched AI draft(s) are checked for auto-publishing after each scheduled pull '
+            f'(score above the bar and checks passed), named to {e(editor["display_name"])}.{e(lastline)}</span>{run}</div>')
+
+
 def queue_page(db: Database, actor: dict | None, q: dict) -> tuple[str, str]:
     scope = categories.user_scope(actor)
     cat = q.get("cat", [""])[0]
@@ -330,7 +353,7 @@ def queue_page(db: Database, actor: dict | None, q: dict) -> tuple[str, str]:
 <div><a class="btn" href="/story/{r['id']}">Open</a></div></div>""")
     body = (f'<h1 class="page">Stories</h1><p class="sub">AI drafts arrive here from the pipeline. Editors approve or assign them; '
             f'publishers put approved stories live.' + (f' You work on: {e(categories.scope_label(actor))}.' if scope is not None else '')
-            + f'</p>{category_chips(q, "/", actor)}<div class="tabs">{"".join(tabs)}</div>'
+            + f'</p>{autopublish_box(db, actor)}{category_chips(q, "/", actor)}<div class="tabs">{"".join(tabs)}</div>'
             + ("".join(items) or '<div class="empty">Nothing in this queue.</div>'))
     return "Stories", body
 
@@ -1276,10 +1299,25 @@ def team_page(db: Database, user: dict, issued: dict | None = None) -> tuple[str
 <label>Job title (shown in bylines for editors)</label><input type="text" name="job_title"></div></div>
 <label>Categories they work on (leave all unticked for every category; admins always see everything)</label><div>{cat_boxes([])}</div>
 <p><button class="primary">Create account</button> <span class="meta">They get a temporary password to change on first sign-in.</span></p></form></div>"""
+    ap_editor, ap_problem = wf.responsible_editor(db)
+    choices = [u for u in users if u["active"] and u["role"] in ("editor", "admin")
+               and not (u["is_placeholder"] and get_settings().app_env == "production")]
+    env_set = bool(os.getenv("AUTOPUBLISH_RESPONSIBLE_EDITOR"))
+    ap_opts = "".join(f'<option value="{e(u["email"])}" {"selected" if ap_editor and u["id"] == ap_editor["id"] else ""}>'
+                      f'{e(u["display_name"])} ({e(role_label(u["role"]))})</option>' for u in choices)
+    autopub = (f'<div class="panel" id="autopublish"><h2>Auto-publish</h2>'
+               f'<p class="meta">Untouched AI drafts that score above the bar and pass every check are published automatically, '
+               f'named to this editor as the person responsible (Fitness &amp; health is never auto-published).</p>'
+               + (f'<div class="issue error">{e(ap_problem)}</div>' if ap_problem else
+                  f'<p>Responsible editor: <b>{e(ap_editor["display_name"])}</b></p>')
+               + (f'<p class="meta">Set on the server with AUTOPUBLISH_RESPONSIBLE_EDITOR in .env, which overrides this page.</p>' if env_set else "")
+               + (f'<form class="inline" method="post" action="/settings/autopublish-editor"><select name="who"><option value="">Choose…</option>{ap_opts}</select> '
+                  f'<button class="primary">Save</button></form>' if is_admin and not env_set else "")
+               + '</div>')
     note = ("" if is_admin else '<p class="sub">Only admins can add people or change roles.</p>')
     body = (f'<h1 class="page">Team</h1><p class="sub">Copy editors edit assigned stories, editors approve, assign and unpublish, '
             f'publishers put approved stories live, admins manage everything including the team. People only see and act on '
-            f'stories in their categories.</p>{note}{secret}{add}'
+            f'stories in their categories.</p>{note}{secret}{autopub}{add}'
             f'<table><tr><th>Person</th><th>Role</th><th>Email</th><th>Status</th><th></th></tr>{"".join(rows)}</table>')
     return "Team", body
 
@@ -1890,6 +1928,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._redirect(f"/story/{sid}?err={quote(str(exc))}")
                 return self._redirect(f"/story/{sid}?ok={quote('Moved to ' + categories.name(form.get('category')) + '.')}")
 
+            if path == "/settings/autopublish-editor":
+                who = form.get("who", "").strip()
+                _, ed = wf._find_editor(db, who)
+                if not ed:
+                    return self._redirect(f"/team?err={quote('Choose an active editor or admin.')}")
+                try:
+                    wf.set_setting(db, user, "autopublish_editor", ed["email"])
+                except wf.WorkflowError as exc:
+                    return self._redirect(f"/team?err={quote(str(exc))}")
+                return self._redirect(f"/team?ok={quote(ed['display_name'] + ' is now named on auto-published stories.')}#autopublish")
+            if path == "/autopublish":
+                if user["role"] != "admin":
+                    return self._redirect(f"/?err={quote('Only admins can run auto-publish by hand.')}")
+                _, problem = wf.responsible_editor(db)
+                if problem:
+                    return self._redirect(f"/?err={quote(problem)}")
+                pull_mod.start_autopublish()
+                return self._redirect(f"/?ok={quote('Auto-publish started: qualifying drafts get images and go live in a minute or two. Refresh to see them under Published.')}")
             if path == "/team":
                 try:
                     new, temp = auth.create_user(db, user, email=form.get("email", ""), display_name=form.get("display_name", ""),
