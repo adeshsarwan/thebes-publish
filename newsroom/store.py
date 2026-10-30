@@ -103,7 +103,9 @@ def create_ai_draft(db: Database, *, cluster_id: int, country: str, slug: str, c
          db.j(research) if research is not None else None, now, now),
     )
     add_revision(db, story_id, 1, dict(content, category=category), author_kind="ai", guardrails=guardrails, model=model,
-                 note=f"AI draft, {attempts} attempt(s)" + (" (editor pick, with AI research)" if research else
+                 note=f"AI draft, {attempts} attempt(s)" + (" (written from a link" + (", with AI research)" if (research or {}).get("text") else ")")
+                                                            if origin == "from_link" else
+                                                            " (editor pick, with AI research)" if research else
                                                             " (editor pick)" if origin == "editor_pick" else ""))
     status = "passed guardrails" if guardrails.get("passed") else "has guardrail issues"
     log_event(db, story_id, "drafted", actor_id=picked_by, to_status="ai_draft", note=f"AI draft {status}")

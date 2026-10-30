@@ -50,6 +50,11 @@ PRIMARY = {"approve", "publish", "submit"}
 PLACEHOLDER_PILL = '<span class="pill hold">Placeholder</span>'
 AUTO_PILL = '<span class="pill hold">Auto-published</span>'
 PICK_PILL = '<span class="pill s-in_review">Editor pick</span>'
+LINK_PILL = '<span class="pill s-in_review">From a link</span>'
+
+
+def origin_pill(story: dict) -> str:
+    return {"editor_pick": PICK_PILL, "from_link": LINK_PILL}.get(story.get("origin") or "", "")
 ROLE_LABELS = {"copywriter": "Copy editor", "editor": "Editor", "publisher": "Publisher", "admin": "Admin"}
 SESSION_COOKIE = "fh_session"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -130,7 +135,7 @@ header{border-bottom:1px solid var(--line);background:var(--panel);position:stic
 .brand{font-family:var(--serif);font-size:19px;font-weight:700}.brand small{font-family:var(--sans);font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin-left:6px}
 nav{display:flex;gap:14px;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;font-weight:500}nav a.on{color:var(--ink)}
 .who{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:13px;color:var(--muted)}
-select,input[type=text],textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+select,input[type=text],input[type=url],textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
 textarea{width:100%;line-height:1.5}input[type=text]{width:100%}
 main{max-width:1240px;margin:0 auto;padding:22px 20px 60px}
 h1.page{font-family:var(--serif);font-size:27px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 18px}
@@ -200,6 +205,8 @@ input[type=email],input[type=password]{font:inherit;color:var(--ink);background:
 .inline{display:inline}.row-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 @media (max-width:920px){.grid2{grid-template-columns:1fr}}
 .banner{background:var(--info-bg);color:var(--info);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:14px}
+.linkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 16px}.linkbar input[type=url]{flex:1;min-width:260px}
+.linkbar b{font-size:14px;margin-right:4px}.form input[type=url]{width:100%}
 @media (max-width:920px){.layout{grid-template-columns:1fr}.row{grid-template-columns:48px 1fr}.row>div:last-child{grid-column:1/-1}
 article{padding:22px 18px;font-size:17px}article h1{font-size:26px}.card{grid-template-columns:56px 1fr}.card .dims{grid-column:1/-1}.who{margin-left:0}}
 """
@@ -347,13 +354,13 @@ def queue_page(db: Database, actor: dict | None, q: dict) -> tuple[str, str]:
             who.append(f"Editor: {e(r['editor_name'])}")
         origin = "AI draft" if r["author_kind"] == "ai" and r["current_version"] == 1 else f"v{r['current_version']}"
         items.append(f"""<div class="row"><div class="score">{score}<small>impact</small></div>
-<div><div class="meta">{cat_pill(r.get('category'))} {status_pill(r['status'])} {gr_pill(r['guardrails'])} {AUTO_PILL if r.get('auto_published') else ''}{PICK_PILL if r.get('origin') == 'editor_pick' else ''} &nbsp;{e(COUNTRY_NAMES.get(r['country'], r['country']))} · {origin} · {r.get('word_count') or 0} words · updated {when(r['updated_at'])}</div>
+<div><div class="meta">{cat_pill(r.get('category'))} {status_pill(r['status'])} {gr_pill(r['guardrails'])} {AUTO_PILL if r.get('auto_published') else ''}{origin_pill(r)} &nbsp;{e(COUNTRY_NAMES.get(r['country'], r['country']))} · {origin} · {r.get('word_count') or 0} words · updated {when(r['updated_at'])}</div>
 <div class="hl"><a href="/story/{r['id']}">{e(r['headline'])}</a></div>
 <div class="meta">{' · '.join(who) or e(r.get('angle') or '')}</div></div>
 <div><a class="btn" href="/story/{r['id']}">Open</a></div></div>""")
     body = (f'<h1 class="page">Stories</h1><p class="sub">AI drafts arrive here from the pipeline. Editors approve or assign them; '
             f'publishers put approved stories live.' + (f' You work on: {e(categories.scope_label(actor))}.' if scope is not None else '')
-            + f'</p>{autopublish_box(db, actor)}{category_chips(q, "/", actor)}<div class="tabs">{"".join(tabs)}</div>'
+            + f'</p>{link_bar(db, actor)}{autopublish_box(db, actor)}{category_chips(q, "/", actor)}<div class="tabs">{"".join(tabs)}</div>'
             + ("".join(items) or '<div class="empty">Nothing in this queue.</div>'))
     return "Stories", body
 
@@ -432,6 +439,13 @@ def origin_timeline(db: Database, story: dict) -> str:
             entries.append((str(pr["created_at"]), 2, pr["display_name"],
                             f'Picked it up over the desk{" with AI research" if pr["research"] else ""}. Angle: {e(pr["angle"])}'
                             + (f' · <span class="bad">failed: {e(pr["error"])}</span>' if pr["status"] == "failed" else "")))
+    if not cid:
+        for pr in db.fetchall(
+                """select p.*, u.display_name from newsroom.pick_requests p join newsroom.users u on u.id = p.requested_by
+                   where p.cluster_id is null and p.story_id = ? order by p.id""", (story["id"],)):
+            entries.append((str(pr["created_at"]), 2, pr["display_name"],
+                            f'Pasted a link to write from: <a href="{e(pr["source_url"])}" target="_blank" rel="noopener">'
+                            f'{e(pr["source_url"])}</a>{" (with AI research)" if pr["research"] else ""}'))
     revs = {r["version"]: r for r in db.fetchall(
         """select r.version, r.author_kind, r.note, r.created_at, r.word_count, u.display_name
            from newsroom.story_revisions r left join newsroom.users u on u.id = r.author_id where r.story_id = ?""", (story["id"],))}
@@ -500,7 +514,7 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
             else ('<span class="pill s-unpublished">Retracted</span>' if site_row else "Not on site"))
     info = "".join(f"<span>{k}</span><b>{v}</b>" for k, v in (
         ("Status", status_pill(story["status"]) + (" " + AUTO_PILL if story.get("auto_published") else "")
-         + (" " + PICK_PILL if story.get("origin") == "editor_pick" else "")), ("On the site", live),
+         + (" " + origin_pill(story) if origin_pill(story) else "")), ("On the site", live),
         ("Version", f'v{story["current_version"]}'), ("Copy editor", e(names.get(story.get("assigned_to"), "—"))),
         ("Responsible editor" if story.get("auto_published") and story["status"] == "published" else "Byline (approving editor)",
          e(names.get(story.get("editor_id"), "—"))),
@@ -528,11 +542,21 @@ def story_page(db: Database, story_id: int, actor: dict | None, version: int | N
         srcs = "".join(f'<li><a href="{e(x["url"])}" target="_blank" rel="noopener">{e(x.get("title") or x["url"])}</a>'
                        f' · {e(x.get("name") or "")}</li>' for x in rs.get("sources") or [])
         picker = names.get(story.get("picked_by")) or ""
-        research_html = (f'<div class="panel" style="margin-top:20px"><h2>Editor pick · research brief</h2>'
-                         f'<p class="meta">Picked up{" by " + e(picker) if picker else ""} over the desk\'s '
-                         f'{e(rs.get("desk_decision") or "decision")}'
-                         f'{" (" + format(rs["desk_score"], ".0f") + ")" if rs.get("desk_score") is not None else ""}. '
-                         f'Angle: {e(rs.get("angle") or "")}</p>'
+        if story.get("origin") == "from_link":
+            head = (f'<h2>Written from a link{" · research brief" if rs.get("text") else ""}</h2>'
+                    f'<p class="meta">{"Pasted by " + e(picker) + ": " if picker else "From: "}'
+                    f'<a href="{e(rs.get("source_url") or "")}" target="_blank" rel="noopener">{e(rs.get("source_title") or rs.get("source_url") or "")}</a>'
+                    f' · {e(urlsplit(rs.get("source_url") or "").hostname or "")}. Angle: {e(rs.get("angle") or "")}</p>'
+                    + ('' if rs.get("source_read", True) else
+                       '<div class="issue warning">The page itself couldn\'t be read (it blocks robots or needs a login), '
+                       'so the facts come from the AI research only. Check them against the original.</div>'))
+        else:
+            head = (f'<h2>Editor pick · research brief</h2>'
+                    f'<p class="meta">Picked up{" by " + e(picker) if picker else ""} over the desk\'s '
+                    f'{e(rs.get("desk_decision") or "decision")}'
+                    f'{" (" + format(rs["desk_score"], ".0f") + ")" if rs.get("desk_score") is not None else ""}. '
+                    f'Angle: {e(rs.get("angle") or "")}</p>')
+        research_html = (f'<div class="panel" style="margin-top:20px">{head}'
                          + (f'<p><b>Editor\'s notes:</b> {e(rs["notes"])}</p>' if rs.get("notes") else "")
                          + (f'<div class="brief">{render_markdown(rs["text"])}</div>' if rs.get("text") else "")
                          + (f'<h3>Research sources</h3><ul>{srcs}</ul>' if srcs else "")
@@ -1069,6 +1093,97 @@ def pickup_page(db: Database, user: dict, cluster_id: int, form: dict | None = N
     return "Pick up", body
 
 
+# --------------------------------------------------------------------------- write from a link
+def _link_defaults(db: Database, user: dict) -> tuple[str, str]:
+    """Edition and category for a new link story: the person's last choice, else their first category."""
+    last = db.fetchone("select country, category from newsroom.pick_requests where cluster_id is null and requested_by = ? "
+                       "order by id desc limit 1", (user["id"],)) or {}
+    cats = [c for c, _ in categories.choices() if categories.can_access(user, c)]
+    cat = last.get("category") if last.get("category") in cats else (cats[0] if cats else categories.default())
+    country = last.get("country") if last.get("country") in COUNTRY_NAMES else next(iter(COUNTRY_NAMES))
+    return country, cat
+
+
+def _edition_select(selected: str) -> str:
+    return f'<select name="country" aria-label="Edition">{_options(list(COUNTRY_NAMES), selected, COUNTRY_NAMES)}</select>'
+
+
+def _category_select(user: dict, selected: str) -> str:
+    opts = [(c, n) for c, n in categories.choices() if categories.can_access(user, c)]
+    return (f'<select name="category" aria-label="Category">{_options([c for c, _ in opts], selected, dict(opts))}</select>')
+
+
+def link_bar(db: Database, user: dict | None) -> str:
+    """On the Stories screen: paste a story's address and the AI writes our own version."""
+    if not pick_mod.can_pick(user):
+        return ""
+    country, cat = _link_defaults(db, user)
+    busy = [r for r in pick_mod.link_requests(db, user, 10) if r["status"] in ("queued", "running")]
+    note = (f' <a class="meta" href="/from-link">{len(busy)} being written…</a>' if busy else "")
+    return (f'<form class="linkbar panel" method="post" action="/from-link"><b>Write from a link</b>'
+            f'<input type="url" name="url" required placeholder="Paste a story\'s web address: https://…">'
+            f'{_edition_select(country)}{_category_select(user, cat)}<input type="hidden" name="research" value="1">'
+            f'<button class="primary">Research and write</button><a class="meta" href="/from-link">More options</a>{note}</form>')
+
+
+def _link_status(r: dict) -> str:
+    if r["status"] in ("queued", "running"):
+        return f'<span class="pill hold">{"Researching and writing" if r["research"] else "Writing"}…</span>'
+    if r["status"] == "done" and r.get("story_id"):
+        return (f'<a class="btn" href="/story/{r["story_id"]}">Open story</a> '
+                + (status_pill(r["story_status"]) if r.get("story_status") else ""))
+    return (f'<span class="pill reject">Failed</span> <a href="/from-link?retry={r["id"]}">Try again</a>'
+            f'<div class="meta bad">{e((r.get("error") or "")[:300])}</div>')
+
+
+def link_page(db: Database, user: dict, form: dict | None = None, error: str | None = None,
+              retry: int | None = None) -> tuple[str, str]:
+    rows = pick_mod.link_requests(db, user)
+    f = dict(form or {})
+    if not f and retry:
+        r = next((x for x in rows if x["id"] == retry), None)
+        if r:
+            f = {"url": r["source_url"], "country": r["country"], "category": r["category"], "angle": r["angle"] or "",
+                 "audience": ", ".join(Database.unj(r.get("audience"), [])), "notes": r.get("notes") or "",
+                 "urls": "\n".join(Database.unj(r.get("extra_urls"), [])), "research": "1" if r["research"] else "0"}
+    err = f'<div class="flash err">{e(error)}</div>' if error else ""
+    if not pick_mod.can_pick(user):
+        form_html = '<div class="meta">Only editors and admins can write stories from a link.</div>'
+    else:
+        country, cat = _link_defaults(db, user)
+        checked = "checked" if f.get("research", "1") == "1" else ""
+        form_html = f"""<form class="form panel" method="post" action="/from-link">
+<h2>The story to write from</h2>
+<label>Web address of the story</label>
+<input type="url" name="url" required value="{e(f.get('url', ''))}" placeholder="https://...">
+<div class="grid2"><div><label>Edition</label>{_edition_select(f.get("country") or country)}</div>
+<div><label>Category</label>{_category_select(user, f.get("category") or cat)}</div></div>
+<label>Angle (optional): what should our story explain? Leave empty and the AI chooses one for our readers.</label>
+<textarea name="angle" rows="2">{e(f.get('angle', ''))}</textarea>
+<label>Audience (optional, comma-separated)</label><input type="text" name="audience" value="{e(f.get('audience', ''))}">
+<label>Notes for the AI: what to research, check or emphasise</label>
+<textarea name="notes" rows="3" placeholder="e.g. Find the official figures behind this and what it means for UK renters.">{e(f.get('notes', ''))}</textarea>
+<label>Extra sources (optional, one web address per line)</label>
+<textarea name="urls" rows="2" placeholder="https://...">{e(f.get('urls', ''))}</textarea>
+<label><input type="checkbox" name="research" value="1" {checked}> Research with AI using live Google Search (recommended)</label>
+{image_prompt_rows(f, "")}
+<p><button class="primary">Research and write</button>
+<span class="meta">The AI reads the page, researches the topic and writes our own story; the checks flag any copied wording.
+The draft arrives in "Needs an editor", marked From a link. It is never published automatically.</span></p></form>"""
+    trs = "".join(
+        f'<tr><td style="white-space:nowrap">{when(r["created_at"])}</td>'
+        f'<td><a href="{e(r["source_url"])}" target="_blank" rel="noopener">{e(urlsplit(r["source_url"]).hostname or r["source_url"])}</a>'
+        f'<div class="meta">{e(r["source_url"][:120])}</div></td>'
+        f'<td>{cat_pill(r.get("category"))} {e(r.get("country") or "")}</td><td>{e(r["display_name"])}</td><td>{_link_status(r)}</td></tr>'
+        for r in rows)
+    recent = (f'<div class="panel"><h2>Recent links</h2><table><tr><th>When</th><th>Link</th><th>Edition</th><th>By</th><th></th></tr>'
+              f'{trs}</table></div>' if rows else "")
+    body = (f'<p class="sub"><a href="/">← Stories</a></p><h1 class="page">Write from a link</h1>'
+            f'<p class="sub">Paste another publication\'s story. The AI reads it, researches the topic with live search and writes '
+            f'our own original story for the edition you choose, through the same checks as every draft.</p>{err}{form_html}{recent}')
+    return "Write from a link", body
+
+
 def _item_outcome(r: dict) -> tuple[str, str]:
     """(outcome key, html) for one pulled item."""
     if r["status"] == "filtered":
@@ -1209,7 +1324,7 @@ def _site_desk(db: Database, user: dict, site_row: dict, art: str) -> str | None
         ("On the site", f'<span class="pill s-published">Live v{site_row["version"]}</span>' if site_row["status"] == "live"
          else '<span class="pill s-unpublished">Unpublished</span>'),
         ("Newsroom status", status_pill(story["status"]) + (" " + AUTO_PILL if story.get("auto_published") else "")
-         + (" " + PICK_PILL if story.get("origin") == "editor_pick" else "")),
+         + (" " + origin_pill(story) if origin_pill(story) else "")),
         ("Newsroom version", f'v{story["current_version"]}'),
     ))
     site_seo = Database.unj(site_row.get("seo"), None) or {}
@@ -1736,6 +1851,11 @@ class Handler(BaseHTTPRequestHandler):
                 cid = int(m.group(1))
                 busy = pick_mod.active_request(db, cid) is not None
                 return self._render(db, user, pickup_page(db, user, cid), "scoring", q, refresh=5 if busy else None)
+            if path == "/from-link":
+                retry = q.get("retry", [""])[0]
+                busy = any(r["status"] in ("queued", "running") for r in pick_mod.link_requests(db, user, 10))
+                return self._render(db, user, link_page(db, user, retry=int(retry) if retry.isdigit() else None),
+                                    "queue", q, refresh=5 if busy and not retry else None)
             if path == "/sources":
                 return self._render(db, user, sources_page(db, user, q=q), "sources", q,
                                     refresh=10 if pull_mod.is_running() else None)
@@ -1996,6 +2116,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, page(out[0], "scoring", out[1], user))
                 pick_mod.start_background(rid)
                 return self._redirect(f"/scoring/{cid}/pickup")
+            if path == "/from-link":
+                f = {k: form.get(k, "") for k in ("url", "country", "category", "angle", "audience", "notes", "urls")}
+                f.update({k: v for k, v in form.items() if k.startswith("img_")})
+                f["research"] = "1" if form.get("research") == "1" else "0"
+                try:
+                    rid = pick_mod.request_from_link(db, user, f["url"], country=f["country"], category=f["category"],
+                                                     angle=f["angle"], audience=f["audience"], notes=f["notes"],
+                                                     extra_urls=f["urls"], research=f["research"] == "1",
+                                                     image_prompts=_prompts_from_form(form))
+                except pick_mod.PickupError as exc:
+                    db.rollback()
+                    out = link_page(db, user, form=f, error=str(exc))
+                    return self._send(200, page(out[0], "queue", out[1], user))
+                pick_mod.start_background(rid)
+                return self._redirect(f"/from-link?ok={quote('Started: the AI is reading and researching the story. This page refreshes until it is done.')}")
             if path == "/sources":
                 if not src_mod.can_manage(user):
                     return self._redirect(f"/sources?err={quote('Only editors and admins can add sources.')}")

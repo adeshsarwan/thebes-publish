@@ -51,6 +51,7 @@ def sqlite_ddl(pg_sql: str) -> str:
     s = re.sub(r"--[^\n]*", "", pg_sql)
     s = re.sub(r"create schema if not exists \w+;", "", s, flags=re.I)
     s = re.sub(r"alter table [^;]+ add column if not exists [^;]+;", "", s, flags=re.I)   # tables are created fresh
+    s = re.sub(r"alter table [^;]+ alter column [^;]+;", "", s, flags=re.I)
     s = re.sub(r"\bbigserial primary key\b", "integer primary key autoincrement", s, flags=re.I)
     s = re.sub(r"\bjsonb\b", "text", s, flags=re.I)
     s = re.sub(r"\btimestamptz\b", "text", s, flags=re.I)

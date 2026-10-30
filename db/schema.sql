@@ -173,9 +173,14 @@ create index if not exists stories_status on newsroom.stories (status, updated_a
 
 -- Editor pick-ups: an editor overrides the desk's decision and asks the AI to
 -- research and draft a story. Runs in the background; the row tracks progress.
+-- Also "Write from a link": an editor pastes another publication's story URL; then cluster_id is
+-- null and source_url/country/category say what to write about.
 create table if not exists newsroom.pick_requests (
     id           bigserial primary key,
-    cluster_id   bigint not null,                 -- pipeline.story_clusters(id)
+    cluster_id   bigint,                          -- pipeline.story_clusters(id); null for a story written from a link
+    source_url   text,                            -- the story an editor pasted (Write from a link)
+    country      text,                            -- link requests: the edition to write for
+    category     text,                            -- link requests: the category to write in
     requested_by bigint not null references newsroom.users(id),
     angle        text not null,
     audience     jsonb not null default '[]',
@@ -306,6 +311,11 @@ alter table pipeline.sources add column if not exists deleted_at timestamptz;
 alter table pipeline.sources add column if not exists deleted_by text;
 alter table pipeline.evaluations add column if not exists image_prompt text;
 alter table site.published_stories add column if not exists images jsonb not null default '[]';
+alter table newsroom.pick_requests alter column cluster_id drop not null;
+alter table newsroom.pick_requests add column if not exists source_url text;
+alter table newsroom.pick_requests add column if not exists country text;
+alter table newsroom.pick_requests add column if not exists category text;
+create index if not exists pick_requests_source_url on newsroom.pick_requests (source_url);
 
 -- Images attached to newsroom stories: stock photos (hotlinked from Unsplash/Pexels with
 -- credit), AI illustrations (Nano Banana, stored in Cloudflare R2) and uploads (R2).

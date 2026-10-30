@@ -129,6 +129,7 @@ def parse_page_seo(html: str) -> dict:
         "section": clean_keywords(m.get("article:section", []) + ld_sections, 3),
         "title": first("og:title", "twitter:title") or " ".join(p.title.split()),
         "description": first("description", "og:description", "twitter:description"),
+        "published": first("article:published_time", "og:article:published_time"),
     }
 
 
