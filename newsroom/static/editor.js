@@ -741,5 +741,32 @@
     return n;
   }
   root.addEventListener("input", function (ev) { if (ev.target.classList && ev.target.classList.contains("blk-alt")) markDirty(); });
-  window.FH_EDITOR = { serialise: serialise, state: state, insertImage: insertImage };
+  // Called by the AI assistant: put its blocks after the block last worked on (or at the end).
+  // An empty paragraph there is replaced rather than left behind.
+  function insertBlocks(list) {
+    if (!list || !list.length) return null;
+    var ref = lastBlock && lastBlock.parentNode === root ? lastBlock : root.lastElementChild, first = null;
+    var empty = ref && ref.dataset.type === "paragraph" && !textOf(bodyOf(ref)).trim() ? ref : null;
+    list.forEach(function (b) {
+      ref = insertAfter(ref, b, false);
+      ref.classList.add("ai-new");
+      if (!first) first = ref;
+    });
+    if (empty) empty.remove();
+    lastBlock = ref;
+    setTimeout(function () { Array.prototype.forEach.call(root.querySelectorAll(".ai-new"), function (n) { n.classList.remove("ai-new"); }); }, 4000);
+    first.scrollIntoView({ block: "center", behavior: "smooth" });
+    return first;
+  }
+  // Called by the AI assistant: add its research sources to the story's source list (skipping ones already there).
+  function addSources(list) {
+    var have = getSources(), added = 0;
+    (list || []).forEach(function (x) {
+      if (!x || !x.url || have.some(function (h) { return h.url === x.url; })) return;
+      have.push({ url: x.url, name: x.name || "", title: x.title || x.url }); added++;
+    });
+    if (added) setSources(have);
+    return added;
+  }
+  window.FH_EDITOR = { serialise: serialise, state: state, insertImage: insertImage, insertBlocks: insertBlocks, addSources: addSources };
 })();

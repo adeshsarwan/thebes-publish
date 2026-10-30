@@ -381,6 +381,26 @@ create table if not exists newsroom.story_autosaves (
     primary key (story_id, user_id)
 );
 
+-- The editor's AI assistant: one row per question and answer, shared by everyone editing the story.
+create table if not exists newsroom.story_chats (
+    id           bigserial primary key,
+    story_id     bigint not null references newsroom.stories(id),
+    user_id      bigint not null references newsroom.users(id),
+    question     text not null,
+    research     boolean not null default true,       -- answered with Google Search
+    story_state  jsonb,                                -- the story on screen when asked {headline, dek, blocks}
+    status       text not null default 'queued' check (status in ('queued','running','done','failed')),
+    reply        text,                                 -- markdown answer
+    blocks       jsonb not null default '[]',          -- text to add, as editor blocks
+    sources      jsonb not null default '[]',          -- [{name, title, url}]
+    queries      jsonb not null default '[]',
+    model        text,
+    error        text,
+    created_at   timestamptz not null default now(),
+    finished_at  timestamptz
+);
+create index if not exists story_chats_story on newsroom.story_chats (story_id, id);
+
 create table if not exists site.api_clients (
     id          bigserial primary key,
     name        text not null,                 -- who it's for, e.g. "Acme frontend (staging)"

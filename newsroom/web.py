@@ -28,6 +28,7 @@ from pipeline.db import Database, connect, utcnow
 from pipeline.settings import COUNTRY_NAMES, get_settings
 
 from . import auth
+from . import assistant as ai_mod
 from . import pickup as pick_mod
 from . import pull as pull_mod
 from . import schedule as sched
@@ -61,7 +62,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_FILES = {"/static/editor.js": (STATIC_DIR / "editor.js", "text/javascript; charset=utf-8"),
                 "/static/editor.css": (STATIC_DIR / "editor.css", "text/css; charset=utf-8"),
                 "/static/images.js": (STATIC_DIR / "images.js", "text/javascript; charset=utf-8"),
-                "/static/images.css": (STATIC_DIR / "images.css", "text/css; charset=utf-8")}
+                "/static/images.css": (STATIC_DIR / "images.css", "text/css; charset=utf-8"),
+                "/static/assistant.js": (STATIC_DIR / "assistant.js", "text/javascript; charset=utf-8")}
 
 
 def role_label(role: str) -> str:
@@ -647,7 +649,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
     toolbar = f"""<div class="ed-top"><a class="btn" href="{e(back)}">← Back</a>
 <div class="ttl">{e(story['country'])} story<small>v{story['current_version']} · saving creates v{nv}</small></div>
 {status_pill(story['status'])}{(' <span class="pill s-published">Live v' + str(story['live_version']) + '</span>') if story.get('live') else ''}
-<div class="grow"></div><span id="ed-msg" class="ed-msg" role="status"></span><span id="ed-wc" class="ed-wc"></span>
+<div class="grow"></div><button type="button" id="ai-open" title="Ask the AI to research, check or write (opens the assistant)">Ask AI</button><span id="ed-msg" class="ed-msg" role="status"></span><span id="ed-wc" class="ed-wc"></span>
 <button id="ed-save" form="editform" name="then" value="save"{save_cls}>Save draft</button>{primary}</div>"""
 
     # sidebar
@@ -689,6 +691,7 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
                     + (f"<ul>{rsrc}</ul>" if rsrc else "") + "</details></section>")
     side = f"""<aside class="ed-side">
 <section><h3>Story</h3><div class="kv">{status_kv}</div><p style="margin:10px 0 0"><a href="/story/{story_id}">Story page &amp; actions</a> · <a href="/story/{story_id}/history">History</a></p></section>
+{assistant_panel(story_id)}
 {images_panel(db, story, actor, "editor")}
 <section><h3>What did you change?</h3><input type="text" form="editform" name="note" placeholder="Saved with this version, e.g. Tightened the intro"></section>
 {correction}
@@ -737,8 +740,30 @@ def edit_page(db: Database, story_id: int, actor: dict | None, next_url: str | N
 <div class="ed-adds"><button type="button" id="ed-add" class="ed-add">+ Add block</button><button type="button" id="ed-add-img" class="ed-add">+ Add image</button></div>
 </div></div>{side}</div>
 <script id="ed-data" type="application/json">{data_json}</script>
-<script src="/static/editor.js"></script>"""
+<script src="/static/editor.js"></script>
+<script src="/static/assistant.js"></script>"""
     return "Edit · " + rev["headline"], body
+
+
+ASSIST_IDEAS = ("Find the latest official figures on this and add them",
+                "Add a short section on who is most affected",
+                "Check the facts and figures in this story",
+                "Suggest three stronger headlines")
+
+
+def assistant_panel(story_id: int) -> str:
+    """The AI assistant in the editor sidebar; assistant.js runs it."""
+    ideas = "".join(f'<button type="button" class="ai-idea">{e(i)}</button>' for i in ASSIST_IDEAS)
+    return (f'<section class="ai-panel" id="ai-panel" data-story="{story_id}"><h3>AI assistant</h3>'
+            '<p class="meta ai-intro">Ask it to research, check facts or write more. It reads the story as it is on '
+            'your screen. Nothing changes until you click <b>Insert</b>.</p>'
+            '<div class="ai-thread" id="ai-thread" aria-live="polite"></div>'
+            f'<div class="ai-ideas" id="ai-ideas">{ideas}</div>'
+            '<form class="ai-ask" id="ai-ask"><textarea id="ai-q" rows="3" maxlength="2000" '
+            'placeholder="e.g. Find what Citizens Advice says about this and add a paragraph"></textarea>'
+            '<div class="ai-row"><label class="meta"><input type="checkbox" id="ai-web" checked> Search the web</label>'
+            '<button type="submit" class="primary" id="ai-send">Ask</button></div>'
+            '<div class="ai-err" id="ai-err" role="alert"></div></form></section>')
 
 
 def images_state(db: Database, story: dict, actor: dict | None) -> dict:
@@ -1820,6 +1845,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._render(db, user, history_page(db, int(m.group(1)), user), "queue", q)
             if m := re.fullmatch(r"/story/(\d+)/diff/(\d+)", path):
                 return self._render(db, user, diff_page(db, int(m.group(1)), int(m.group(2)), user), "queue", q)
+            if m := re.fullmatch(r"/story/(\d+)/assistant\.json", path):
+                story = get_story(db, int(m.group(1)))
+                if not story or not ai_mod.can_use(story, user):
+                    return self._json(404, {"error": "not found"})
+                return self._json(200, {"messages": ai_mod.messages(db, story["id"])})
             if m := re.fullmatch(r"/story/(\d+)/images\.json", path):
                 story = get_story(db, int(m.group(1)))
                 if not story or not categories.can_access(user, story.get("category")):
@@ -2019,6 +2049,23 @@ class Handler(BaseHTTPRequestHandler):
                     (sid, user["id"], base, db.j(state), now))
                 db.commit()
                 return self._json(200, {"ok": True, "at": now})
+            if m := re.fullmatch(r"/story/(\d+)/assistant", path):
+                story = get_story(db, int(m.group(1)))
+                if not story or not ai_mod.can_use(story, user):
+                    return self._json(403, {"error": "You can't edit this story now."})
+                try:
+                    state = json.loads(form.get("state") or "{}")
+                    if not isinstance(state, dict):
+                        state = {}
+                except ValueError:
+                    state = {}
+                try:
+                    cid = ai_mod.ask(db, user, story, form.get("question", ""), state, research=form.get("research") == "1")
+                except ai_mod.AssistantError as exc:
+                    db.rollback()
+                    return self._json(400, {"error": str(exc)})
+                ai_mod.start_background(cid)
+                return self._json(200, {"id": cid, "messages": ai_mod.messages(db, story["id"])})
             if upload or re.fullmatch(r"/(story/\d+/images/\w+|images/\d+/\w+)", path):
                 return self._image_post(db, user, path, form, upload)
 

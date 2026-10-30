@@ -131,11 +131,17 @@ def check_content(db: Database, story: dict, content: dict) -> dict:
     research = Database.unj(story.get("research"), None) or {}
     if research.get("text"):
         source_text += "\n\n" + research["text"]
+    # answers the editor's AI assistant researched on the web for this story
+    from . import assistant
+    chat_text, chat_urls = assistant.research_text(db, story["id"]) if story.get("id") else ("", set())
+    if chat_text:
+        source_text += "\n\n" + chat_text
     had_material = bool(source_text)
     # pages an editor added as sources (e.g. a gov.uk page backing a figure)
     from . import sourcepages
     feed_urls = {it["url"] for it in (cluster_items(db, story["cluster_id"]) if story.get("cluster_id") else [])}
     feed_urls |= {x.get("url") for x in research.get("sources") or []}
+    feed_urls |= chat_urls
     extra = sourcepages.extra_source_text(db, content.get("sources") or [], feed_urls)
     if extra:
         source_text += "\n\n" + extra

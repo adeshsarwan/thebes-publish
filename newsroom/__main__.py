@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("schedule"); p.add_argument("op", choices=["install", "uninstall", "status"])
     sub.add_parser("sources")
     p = sub.add_parser("pickup-run"); p.add_argument("request_id", type=int); p.add_argument("--mock", action="store_true")
+    p = sub.add_parser("assistant-run", help="answer an editor's question to the AI assistant (started by the desk)")
+    p.add_argument("chat_id", type=int); p.add_argument("--mock", action="store_true")
     sub.add_parser("media-check", help="test R2 storage, Unsplash and Gemini image settings")
     p = sub.add_parser("autopublish", help="publish qualifying AI drafts now (with images)"); p.add_argument("--mock", action="store_true")
     p = sub.add_parser("image-run", help="generate queued AI images (started by the desk)")
@@ -61,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--angle", required=True); p.add_argument("--audience", default=""); p.add_argument("--notes", default="")
     p.add_argument("--urls", default=""); p.add_argument("--no-research", action="store_true"); p.add_argument("--mock", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.cmd == "assistant-run":
+        from pipeline.llm import get_client
+        from .assistant import run
+        run(args.chat_id, get_client(args.mock))
+        print(f"assistant request {args.chat_id} answered")
+        return 0
 
     if args.cmd == "pickup-run":
         from pipeline.llm import get_client

@@ -208,9 +208,28 @@ class MockClient:
             return self._write(prompt)
         if task == "choose_image":
             return self._choose_image(prompt)
+        if task == "assist":
+            return self._assist(prompt, grounded=False)
         raise LLMError(f"MockClient has no handler for task {task!r}")
 
+    @staticmethod
+    def _assist(prompt: str, grounded: bool) -> dict:
+        """The editor's assistant: an answer, plus text to add when asked to write."""
+        req = (re.search(r"EDITOR'S REQUEST: (.*)", prompt) or [None, ""])[1]
+        reply = (f"I looked into: {req}\n\n- The official figure was 4.2%, published on 27 October.\n"
+                 "- Prepayment customers pay slightly more on average.")
+        add = ""
+        if re.search(r"\b(add|write|expand|draft|rewrite)\b", req, re.I):
+            add = ("## What it means for prepayment customers\n\nPrepayment customers will see the change from January, "
+                   "and the regulator says the 4.2% rise applies to them too.\n\n- Check your meter's tariff\n- Ask about support schemes")
+        if grounded:
+            return {"text": reply + (f"\n\n=== TEXT TO ADD ===\n{add}" if add else ""), "queries": [req],
+                    "sources": [{"title": "example-regulator.gov", "url": "https://example-regulator.gov/price-cap"}]}
+        return {"reply": reply, "text_to_add": add}
+
     def research(self, *, model: str, system: str, prompt: str, temperature: float = 0.3) -> dict:
+        if "EDITOR'S REQUEST:" in prompt:
+            return self._assist(prompt, grounded=True)
         m = re.search(r"TOPIC: (.*)", prompt)
         topic = m.group(1).strip() if m else "the topic"
         text = (f"Research brief on {topic}.\n"
